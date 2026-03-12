@@ -1,0 +1,24 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Test and runtime artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+.startup_service_vars.cmd
+
+# Local generated outputs
+generated_videos/
+codec_probe_*/
+_ffmpeg_probe.txt
+_probe_*.py
+_profile_retrieval.py
+
+# Local service/env files
+.docker-services.env
+
+# Local models and datasets
+models/
+csvdata/
