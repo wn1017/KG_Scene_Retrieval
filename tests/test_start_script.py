@@ -80,6 +80,26 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn('echo [INFO] Attu: %ATTU_URL%', content)
         self.assertIn('echo [INFO] Neo4j Browser: %NEO4J_BROWSER_URL%', content)
 
+    def test_start_script_uses_configured_resource_paths(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn("IMAGE_CSV_PATH", content)
+        self.assertIn("ENGCLIP_CONFIG_PATH", content)
+        self.assertIn("ENGCLIP_MODEL_PATH", content)
+        self.assertIn("CHNCLIP_CONFIG_PATH", content)
+        self.assertIn("CHNCLIP_MODEL_PATH", content)
+        self.assertNotIn('if not exist "csvdata\\nuScenes_v1.0_mini.csv"', content)
+
+    def test_start_script_reports_gradio_reachability(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn('call :launch_gradio_app', content)
+        self.assertIn('call :wait_for_gradio_http', content)
+        self.assertIn("Invoke-WebRequest -UseBasicParsing -Uri '%APP_URL%/gradio_api/info'", content)
+        self.assertIn('echo [OK] Gradio status: AVAILABLE', content)
+        self.assertIn('echo [WARN] Gradio status: TIMEOUT', content)
+        self.assertIn(':hold_console_open', content)
+
     def test_start_script_uses_lightweight_app_check(self):
         content = START_BAT.read_text(encoding="ascii")
 

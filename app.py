@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
+from functools import lru_cache
 from html import escape
 import re
 import time
@@ -18,8 +20,10 @@ from transformers import CLIPModel, CLIPProcessor, ChineseCLIPModel, ChineseCLIP
 from config import (
     CHNCLIP_MODEL_DIR,
     DEFAULT_TOP_K,
+    ENABLE_RETRIEVAL_TIMINGS,
     ENGCLIP_MODEL_DIR,
     GENERATED_VIDEO_DIR,
+    HIT_METADATA_CACHE_SIZE,
     IMAGE_CSV_PATH,
     IMAGE_ID_MIN,
     NUSCENES_META_DIR,
@@ -27,6 +31,7 @@ from config import (
     NUSCENES_SAMPLES_DIR,
     NUSCENES_SWEEPS_DIR,
     PRIMARY_CAMERA,
+    VIDEO_CLIP_CACHE_SIZE,
     VIDEO_FPS,
     VIDEO_FRAME_STRIDE,
     VIDEO_MAX_FRAMES,
@@ -115,6 +120,7 @@ IMAGE_DF, ID_TO_RAW_PATH = load_image_catalog()
 SCENE_BY_TOKEN, FILENAME_TO_SAMPLE_DATA, BASENAME_TO_SAMPLE_DATA, CAMERA_SEQUENCES = load_nuscenes_index()
 KG_SCENE_RECORDS = build_scene_records(NUSCENES_META_DIR)
 KG_RECORD_BY_SCENE_TOKEN = {record["scene_token"]: record for record in KG_SCENE_RECORDS}
+KNOWN_SCENE_TOKENS = set(SCENE_BY_TOKEN) | set(KG_RECORD_BY_SCENE_TOKEN)
 
 
 def infer_camera_from_path(path_value: str | Path | None) -> str:
@@ -235,45 +241,197 @@ def load_collection_state():
 
 
 COLLECTION, MILVUS_ERROR = load_collection_state()
+COLLECTION_LOAD_CACHE_IDS: set[int] = set()
+VIDEO_CLIP_CACHE: OrderedDict[tuple[str, ...], str] = OrderedDict()
+
+
+def clear_runtime_caches() -> None:
+    COLLECTION_LOAD_CACHE_IDS.clear()
+    VIDEO_CLIP_CACHE.clear()
+    get_cached_hit_metadata.cache_clear()
+
+
+def ensure_collection_loaded(active_collection) -> None:
+    collection_key = id(active_collection)
+    if collection_key in COLLECTION_LOAD_CACHE_IDS:
+        return
+    active_collection.load()
+    COLLECTION_LOAD_CACHE_IDS.add(collection_key)
 
 
 def get_live_collection(force_refresh: bool = False):
     global COLLECTION, MILVUS_ERROR
     if force_refresh or COLLECTION is None:
+        COLLECTION_LOAD_CACHE_IDS.clear()
         COLLECTION, MILVUS_ERROR = load_collection_state()
     return COLLECTION
+
+
+@lru_cache(maxsize=HIT_METADATA_CACHE_SIZE)
+def get_cached_hit_metadata(record_id: int, raw_path: str, scene_token_hint: str = "", camera_hint: str = "") -> tuple[tuple[str, object], ...]:
+    del record_id
+
+    resolved_path = resolve_frame_path(raw_path)
+    sample_data = get_sample_data_for_frame(resolved_path, raw_path)
+    metadata: dict[str, object] = {
+        "raw_frame_path": raw_path,
+        "resolved_frame_path": str(resolved_path) if resolved_path else "",
+    }
+
+    inferred_camera = camera_hint or infer_camera_from_path(raw_path) or infer_camera_from_path(resolved_path)
+    if inferred_camera:
+        metadata["camera"] = inferred_camera
+    if scene_token_hint:
+        metadata["scene_token"] = scene_token_hint
+
+    if sample_data:
+        if sample_data.get("sample_token"):
+            metadata["sample_token"] = sample_data.get("sample_token", "")
+        if sample_data.get("scene_token"):
+            metadata["scene_token"] = sample_data.get("scene_token", "")
+        if sample_data.get("camera"):
+            metadata["camera"] = sample_data.get("camera", "")
+        if sample_data.get("filename"):
+            metadata["source_filename"] = sample_data.get("filename", "")
+        if sample_data.get("sample_data_token"):
+            metadata["sample_data_token"] = sample_data.get("sample_data_token", "")
+
+    scene_token = str(metadata.get("scene_token", "") or "")
+    scene_record = SCENE_BY_TOKEN.get(scene_token, {}) if scene_token else {}
+    kg_scene_record = KG_RECORD_BY_SCENE_TOKEN.get(scene_token, {}) if scene_token else {}
+
+    if scene_record.get("name") or kg_scene_record.get("scene_name"):
+        metadata["scene_name"] = scene_record.get("name") or kg_scene_record.get("scene_name", "")
+    if scene_record.get("description") or kg_scene_record.get("description"):
+        metadata["scene_description"] = scene_record.get("description") or kg_scene_record.get("description", "")
+    if kg_scene_record:
+        if kg_scene_record.get("weather"):
+            metadata["weather"] = kg_scene_record.get("weather", "")
+        if kg_scene_record.get("timeofday"):
+            metadata["timeofday"] = kg_scene_record.get("timeofday", "")
+        if kg_scene_record.get("location_area") or kg_scene_record.get("location_kind"):
+            metadata["location"] = f"{kg_scene_record.get('location_area', '')}:{kg_scene_record.get('location_kind', '')}".strip(":")
+        objects = kg_scene_record.get("objects", {})
+        if objects:
+            metadata["obj_types"] = ", ".join(objects.keys())
+
+    return tuple(metadata.items())
+
+
+def format_timing_breakdown(timings: dict[str, float]) -> str:
+    if not ENABLE_RETRIEVAL_TIMINGS:
+        return ""
+    formatted = ", ".join(f"{name}={duration * 1000:.0f}ms" for name, duration in timings.items())
+    return f"timings: {formatted}" if formatted else ""
+
+
+def append_timing_breakdown(status: str, timings: dict[str, float]) -> str:
+    timing_note = format_timing_breakdown(timings)
+    return f"{status} | {timing_note}" if timing_note else status
+
+
+def build_video_clip_cache_key(anchor_record: dict, frame_paths: list[Path]) -> tuple[str, ...]:
+    if not frame_paths:
+        return (
+            str(anchor_record.get("scene_token", "") or anchor_record.get("scene_name", "")),
+            str(anchor_record.get("camera", PRIMARY_CAMERA)),
+            "empty",
+        )
+    return (
+        str(anchor_record.get("scene_token", "") or ""),
+        str(anchor_record.get("scene_name", "") or ""),
+        str(anchor_record.get("camera", PRIMARY_CAMERA)),
+        str(frame_paths[0]),
+        str(frame_paths[-1]),
+        str(len(frame_paths)),
+        str(VIDEO_FPS),
+        str(VIDEO_MAX_FRAMES),
+        str(VIDEO_FRAME_STRIDE),
+    )
+
+
+def get_cached_video_clip(cache_key: tuple[str, ...]) -> Path | None:
+    cached_path = VIDEO_CLIP_CACHE.get(cache_key)
+    if not cached_path:
+        return None
+    clip_path = Path(cached_path)
+    if clip_path.exists() and is_browser_playable_clip(clip_path):
+        VIDEO_CLIP_CACHE.move_to_end(cache_key)
+        return clip_path
+    VIDEO_CLIP_CACHE.pop(cache_key, None)
+    return None
+
+
+def remember_video_clip(cache_key: tuple[str, ...], clip_path: Path) -> None:
+    VIDEO_CLIP_CACHE[cache_key] = str(clip_path)
+    VIDEO_CLIP_CACHE.move_to_end(cache_key)
+    while len(VIDEO_CLIP_CACHE) > VIDEO_CLIP_CACHE_SIZE:
+        VIDEO_CLIP_CACHE.popitem(last=False)
 
 
 STARTUP_MESSAGES = []
 if MODEL_LOAD_ERROR:
     STARTUP_MESSAGES.append(f"Model load failed: {MODEL_LOAD_ERROR}")
 else:
-    STARTUP_MESSAGES.append(f"模型已加载到 {DEVICE.type}")
-STARTUP_MESSAGES.append(f"图像索引: {len(ID_TO_RAW_PATH)} 条")
-STARTUP_MESSAGES.append(f"nuScenes 元数据: {len(SCENE_BY_TOKEN)} 个场景, {len(FILENAME_TO_SAMPLE_DATA)} 条图像记录")
-STARTUP_MESSAGES.append(f"知识图谱场景记录: {len(KG_SCENE_RECORDS)}")
+    STARTUP_MESSAGES.append(f"Models loaded on {DEVICE.type}")
+STARTUP_MESSAGES.append(f"Image index: {len(ID_TO_RAW_PATH)} rows")
+STARTUP_MESSAGES.append(
+    f"nuScenes metadata: {len(SCENE_BY_TOKEN)} scenes, {len(FILENAME_TO_SAMPLE_DATA)} frame records"
+)
+STARTUP_MESSAGES.append(f"KG scene records: {len(KG_SCENE_RECORDS)}")
 if COLLECTION is None:
-    STARTUP_MESSAGES.append(f"Milvus 不可用: {MILVUS_ERROR or '连接失败'}")
+    STARTUP_MESSAGES.append(f"Milvus unavailable: {MILVUS_ERROR or 'connection failed'}")
 else:
-    STARTUP_MESSAGES.append("Milvus collection 已连接")
+    STARTUP_MESSAGES.append("Milvus collection connected")
     if schema_needs_rebuild(COLLECTION):
-        STARTUP_MESSAGES.append("当前 collection 仍是旧 schema，元数据过滤能力会受限，需重建后完全生效")
+        STARTUP_MESSAGES.append(
+            "The current collection still uses the legacy schema; metadata filtering may be limited until rebuilt."
+        )
 INITIAL_STATUS = " | ".join(STARTUP_MESSAGES)
 
 
 def format_parsed_query(parsed_query: dict) -> str:
     parts = []
     if parsed_query.get("weather"):
-        parts.append(f"天气={parsed_query['weather']}")
+        parts.append(f"weather={parsed_query['weather']}")
     if parsed_query.get("time"):
-        parts.append(f"时段={parsed_query['time']}")
+        parts.append(f"time={parsed_query['time']}")
     if parsed_query.get("location"):
-        parts.append(f"地点={parsed_query['location']}")
+        parts.append(f"location={parsed_query['location']}")
     if parsed_query.get("objects"):
-        parts.append("目标物=" + ",".join(parsed_query["objects"]))
+        parts.append("objects=" + ",".join(parsed_query["objects"]))
     if not parts:
-        return "未提取到结构化条件"
-    return "；".join(parts)
+        return "No structured filters extracted."
+    return "; ".join(parts)
+
+
+
+
+def get_local_candidate_scene_tokens(
+    weather: str | None,
+    timeofday: str | None,
+    object_types: list[str],
+    location_kind: str | None,
+) -> list[str]:
+    return filter_scene_records(
+        KG_SCENE_RECORDS,
+        weather=weather,
+        timeofday=timeofday,
+        object_types=object_types,
+        location_kind=location_kind,
+    )
+
+
+def sanitize_candidate_scene_tokens(scene_tokens: list[str] | None) -> list[str]:
+    sanitized_tokens: list[str] = []
+    seen: set[str] = set()
+    for token in scene_tokens or []:
+        normalized_token = str(token or "").strip()
+        if not normalized_token or normalized_token in seen:
+            continue
+        seen.add(normalized_token)
+        sanitized_tokens.append(normalized_token)
+    return sanitized_tokens
 
 
 def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
@@ -283,29 +441,46 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
     location_kind = parsed_query.get("location")
 
     if not any([weather, timeofday, object_types, location_kind]):
-        return [], "未提取到知识图谱过滤条件，转为全库检索。"
+        return [], "No KG filters extracted; falling back to full-collection search."
 
     try:
-        neo4j_tokens = query_scene_tokens(
-            weather=weather,
-            timeofday=timeofday,
-            object_types=object_types,
-            location_kind=location_kind,
+        neo4j_tokens = sanitize_candidate_scene_tokens(
+            query_scene_tokens(
+                weather=weather,
+                timeofday=timeofday,
+                object_types=object_types,
+                location_kind=location_kind,
+            )
         )
+        valid_neo4j_tokens = [token for token in neo4j_tokens if token in KNOWN_SCENE_TOKENS]
+        if valid_neo4j_tokens:
+            if len(valid_neo4j_tokens) != len(neo4j_tokens):
+                ignored_count = len(neo4j_tokens) - len(valid_neo4j_tokens)
+                return valid_neo4j_tokens, (
+                    f"Neo4j filtered {len(valid_neo4j_tokens)} scene(s) and ignored {ignored_count} invalid token(s)."
+                )
+            return valid_neo4j_tokens, f"Neo4j filtered {len(valid_neo4j_tokens)} scene(s)."
         if neo4j_tokens:
-            return neo4j_tokens, f"知识图谱经 Neo4j 筛出 {len(neo4j_tokens)} 个场景。"
-        return [], "知识图谱未筛到候选场景，回退到全库检索。"
+            local_tokens = get_local_candidate_scene_tokens(
+                weather=weather,
+                timeofday=timeofday,
+                object_types=object_types,
+                location_kind=location_kind,
+            )
+            if local_tokens:
+                return local_tokens, f"Neo4j returned out-of-dataset tokens; local KG filtered {len(local_tokens)} scene(s)."
+            return [], "Neo4j returned out-of-dataset scene tokens; falling back to full-collection search."
+        return [], "Neo4j did not find any candidate scenes; falling back to full-collection search."
     except RuntimeError:
-        local_tokens = filter_scene_records(
-            KG_SCENE_RECORDS,
+        local_tokens = get_local_candidate_scene_tokens(
             weather=weather,
             timeofday=timeofday,
             object_types=object_types,
             location_kind=location_kind,
         )
         if local_tokens:
-            return local_tokens, f"Neo4j 不可用，本地图谱筛出 {len(local_tokens)} 个场景。"
-        return [], "Neo4j 不可用，且本地图谱未命中，转为全库检索。"
+            return local_tokens, f"Neo4j unavailable; local KG filtered {len(local_tokens)} scene(s)."
+        return [], "Neo4j unavailable and local KG found no candidate scenes; falling back to full-collection search."
 
 
 def build_scene_filter_expr(scene_tokens: list[str]) -> str:
@@ -358,74 +533,82 @@ def extract_hit_record(hit, output_fields: list[str]) -> dict:
 
 
 def enrich_hit_record(record: dict) -> dict:
-    raw_path = record.get("frame_path") or ID_TO_RAW_PATH.get(record["id"], "")
-    resolved_path = resolve_frame_path(raw_path)
-    sample_data = get_sample_data_for_frame(resolved_path, raw_path)
+    raw_path = str(record.get("frame_path") or ID_TO_RAW_PATH.get(record["id"], "") or "")
+    metadata = dict(
+        get_cached_hit_metadata(
+            int(record["id"]),
+            raw_path,
+            str(record.get("scene_token") or ""),
+            str(record.get("camera") or ""),
+        )
+    )
 
-    record["raw_frame_path"] = raw_path
-    record["resolved_frame_path"] = str(resolved_path) if resolved_path else ""
-    record.setdefault("camera", infer_camera_from_path(raw_path) or infer_camera_from_path(resolved_path))
+    enriched_record = dict(record)
+    for key, value in metadata.items():
+        if key == "raw_frame_path":
+            enriched_record[key] = value
+            continue
+        if not enriched_record.get(key):
+            enriched_record[key] = value
+    return enriched_record
 
-    if sample_data:
-        record.setdefault("sample_token", sample_data.get("sample_token", ""))
-        record.setdefault("scene_token", sample_data.get("scene_token", ""))
-        record.setdefault("camera", sample_data.get("camera", ""))
-        record["source_filename"] = sample_data.get("filename", "")
-        record["sample_data_token"] = sample_data.get("sample_data_token", "")
-
-    scene_token = record.get("scene_token", "")
-    scene_record = SCENE_BY_TOKEN.get(scene_token, {}) if scene_token else {}
-    kg_scene_record = KG_RECORD_BY_SCENE_TOKEN.get(scene_token, {}) if scene_token else {}
-
-    record["scene_name"] = scene_record.get("name") or kg_scene_record.get("scene_name", "")
-    record["scene_description"] = scene_record.get("description") or kg_scene_record.get("description", "")
-    if kg_scene_record:
-        record.setdefault("weather", kg_scene_record.get("weather", ""))
-        record.setdefault("timeofday", kg_scene_record.get("timeofday", ""))
-        if not record.get("location"):
-            record["location"] = f"{kg_scene_record.get('location_area', '')}:{kg_scene_record.get('location_kind', '')}".strip(':')
-        if not record.get("obj_types"):
-            record["obj_types"] = ", ".join(kg_scene_record.get("objects", {}).keys())
-    return record
 
 def search_frame_hits(query_vector: np.ndarray, limit: int, candidate_scene_tokens: list[str] | None = None) -> list[dict]:
     global COLLECTION, MILVUS_ERROR
 
-    candidate_scene_tokens = list(dict.fromkeys(candidate_scene_tokens or []))
+    candidate_scene_tokens = sanitize_candidate_scene_tokens(candidate_scene_tokens)
 
     def _run_search(active_collection) -> list[dict]:
-        active_collection.load()
+        ensure_collection_loaded(active_collection)
         if active_collection.num_entities == 0:
             return []
 
         use_scene_filter = bool(candidate_scene_tokens) and has_field(active_collection, "scene_token")
         output_fields = get_search_output_fields(active_collection)
-        expr = f"id >= {IMAGE_ID_MIN}"
-        search_limit = limit
+        base_expr = f"id >= {IMAGE_ID_MIN}"
+        expr = base_expr
+        search_limit = max(limit * 8, 80) if candidate_scene_tokens else limit
         if use_scene_filter:
-            expr = f"{expr} and {build_scene_filter_expr(candidate_scene_tokens)}"
-        elif candidate_scene_tokens:
-            search_limit = max(limit * 8, 80)
+            expr = f"{base_expr} and {build_scene_filter_expr(candidate_scene_tokens)}"
 
-        search_result = active_collection.search(
-            data=[query_vector.tolist()],
-            anns_field="embedding",
-            param=SEARCH_PARAMS,
-            limit=search_limit,
-            expr=expr,
-            output_fields=output_fields,
-        )
-
-        enriched_hits = []
         allowed_scene_tokens = set(candidate_scene_tokens)
-        for hit in search_result[0]:
-            enriched_record = enrich_hit_record(extract_hit_record(hit, output_fields))
-            if candidate_scene_tokens and not use_scene_filter and enriched_record.get("scene_token") not in allowed_scene_tokens:
-                continue
-            enriched_hits.append(enriched_record)
-            if len(enriched_hits) >= limit:
-                break
-        return enriched_hits
+        query_payload = [query_vector.tolist()]
+
+        def _search(expr_value: str, search_limit_value: int):
+            return active_collection.search(
+                data=query_payload,
+                anns_field="embedding",
+                param=SEARCH_PARAMS,
+                limit=search_limit_value,
+                expr=expr_value,
+                output_fields=output_fields,
+            )
+
+        def _collect_hits(search_result, filter_by_scene: bool, existing_ids: set[int] | None = None) -> list[dict]:
+            existing_ids = existing_ids or set()
+            collected_hits: list[dict] = []
+            for hit in search_result[0]:
+                enriched_record = enrich_hit_record(extract_hit_record(hit, output_fields))
+                if filter_by_scene and enriched_record.get("scene_token") not in allowed_scene_tokens:
+                    continue
+                if enriched_record["id"] in existing_ids:
+                    continue
+                existing_ids.add(enriched_record["id"])
+                collected_hits.append(enriched_record)
+                if len(collected_hits) >= limit:
+                    break
+            return collected_hits
+
+        search_result = _search(expr, search_limit)
+        enriched_hits = _collect_hits(search_result, filter_by_scene=bool(candidate_scene_tokens and not use_scene_filter))
+        if candidate_scene_tokens and len(enriched_hits) < limit:
+            existing_ids = {record["id"] for record in enriched_hits}
+            fallback_result = _search(base_expr, max(search_limit * 4, 240))
+            for enriched_record in _collect_hits(fallback_result, filter_by_scene=True, existing_ids=existing_ids):
+                enriched_hits.append(enriched_record)
+                if len(enriched_hits) >= limit:
+                    break
+        return enriched_hits[:limit]
 
     active_collection = get_live_collection()
     if active_collection is None:
@@ -436,6 +619,7 @@ def search_frame_hits(query_vector: np.ndarray, limit: int, candidate_scene_toke
     except Exception as first_exc:
         COLLECTION = None
         MILVUS_ERROR = str(first_exc)
+        COLLECTION_LOAD_CACHE_IDS.clear()
         refreshed_collection = get_live_collection(force_refresh=True)
         if refreshed_collection is None:
             raise RuntimeError(MILVUS_ERROR or "Milvus is unavailable") from first_exc
@@ -444,34 +628,49 @@ def search_frame_hits(query_vector: np.ndarray, limit: int, candidate_scene_toke
         except Exception as second_exc:
             COLLECTION = None
             MILVUS_ERROR = str(second_exc)
+            COLLECTION_LOAD_CACHE_IDS.clear()
             raise RuntimeError(f"Milvus collection unavailable: {second_exc}") from second_exc
 
 def build_image_caption(record: dict) -> str:
-    caption_parts = [f"相似度: {record['score']:.4f}"]
+    caption_parts = [f"Score: {record['score']:.4f}"]
     if record.get("camera"):
-        caption_parts.append(f"相机: {record['camera']}")
+        caption_parts.append(f"Camera: {record['camera']}")
     if record.get("scene_name"):
-        caption_parts.append(f"场景: {record['scene_name']}")
+        caption_parts.append(f"Scene: {record['scene_name']}")
     elif record.get("scene_token"):
-        caption_parts.append(f"场景标识: {record['scene_token']}")
+        caption_parts.append(f"Scene Token: {record['scene_token']}")
     if record.get("weather"):
-        caption_parts.append(f"天气: {record['weather']}")
+        caption_parts.append(f"Weather: {record['weather']}")
     if record.get("timeofday"):
-        caption_parts.append(f"时段: {record['timeofday']}")
+        caption_parts.append(f"Time: {record['timeofday']}")
     if record.get("obj_types"):
-        caption_parts.append(f"目标物: {trim_text(record['obj_types'], 70)}")
+        caption_parts.append(f"Objects: {trim_text(record['obj_types'], 70)}")
     frame_name = Path(record.get("resolved_frame_path") or record.get("raw_frame_path") or "").name
     if frame_name:
-        caption_parts.append(f"帧文件: {frame_name}")
+        caption_parts.append(f"Frame File: {frame_name}")
     return "<br>".join(caption_parts)
 
 
 def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict, str]:
-    parsed_query = parse_query(text)
-    candidate_scene_tokens, kg_status = get_candidate_scene_tokens(parsed_query)
-    query_vector, model_name = encode_text_query(text)
-    hits = search_frame_hits(query_vector, IMAGE_RESULT_COUNT, candidate_scene_tokens)
+    timings: dict[str, float] = {}
 
+    stage_started_at = time.perf_counter()
+    parsed_query = parse_query(text)
+    timings["nlp"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
+    candidate_scene_tokens, kg_status = get_candidate_scene_tokens(parsed_query)
+    timings["kg"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
+    query_vector, model_name = encode_text_query(text)
+    timings["clip"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
+    hits = search_frame_hits(query_vector, IMAGE_RESULT_COUNT, candidate_scene_tokens)
+    timings["milvus"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
     image_results: list[tuple[Image.Image, str]] = []
     for hit in hits:
         resolved_path = hit.get("resolved_frame_path", "")
@@ -481,8 +680,10 @@ def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict
         image_results.append((image, build_image_caption(hit)))
         if len(image_results) >= IMAGE_RESULT_COUNT:
             break
+    timings["decode"] = time.perf_counter() - stage_started_at
 
-    return image_results, model_name, parsed_query, kg_status
+    return image_results, model_name, parsed_query, append_timing_breakdown(kg_status, timings)
+
 
 def derive_sequence_group_key(record: dict) -> tuple[str, str]:
     camera = record.get("camera") or PRIMARY_CAMERA
@@ -614,6 +815,11 @@ def write_video_clip(anchor_record: dict, frame_paths: list[Path]) -> Path | Non
     if not frame_paths:
         return None
 
+    cache_key = build_video_clip_cache_key(anchor_record, frame_paths)
+    cached_clip = get_cached_video_clip(cache_key)
+    if cached_clip is not None:
+        return cached_clip
+
     GENERATED_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
     clip_stem = anchor_record.get("scene_name") or anchor_record.get("scene_token") or Path(frame_paths[0]).stem
     camera = anchor_record.get("camera") or PRIMARY_CAMERA
@@ -622,14 +828,20 @@ def write_video_clip(anchor_record: dict, frame_paths: list[Path]) -> Path | Non
     fallback_candidate: Path | None = None
     for suffix, codec in VIDEO_CODEC_CANDIDATES:
         candidate_path = GENERATED_VIDEO_DIR / f"{base_name}_{codec}{suffix}"
+        if candidate_path.exists() and is_browser_playable_clip(candidate_path):
+            remember_video_clip(cache_key, candidate_path)
+            return candidate_path
+
         clip_path = render_video_candidate(candidate_path, frame_paths, codec)
         if clip_path is None:
             continue
         if is_browser_playable_clip(clip_path):
+            remember_video_clip(cache_key, clip_path)
             return clip_path
         if ffmpeg_installed() and clip_path.suffix.lower() != ".mp4":
             converted_path = Path(convert_video_to_playable_mp4(str(clip_path)))
             if converted_path.exists() and is_browser_playable_clip(converted_path):
+                remember_video_clip(cache_key, converted_path)
                 return converted_path
         fallback_candidate = clip_path
 
@@ -638,39 +850,64 @@ def write_video_clip(anchor_record: dict, frame_paths: list[Path]) -> Path | Non
     return None
 
 
+
+
 def build_video_caption(record: dict, frame_paths: list[Path], clip_path: Path | None) -> str:
-    caption_parts = [f"最佳帧相似度: {record['score']:.4f}"]
+    caption_parts = [f"Anchor Score: {record['score']:.4f}"]
     if record.get("scene_name"):
-        caption_parts.append(f"场景: {record['scene_name']}")
+        caption_parts.append(f"Scene: {record['scene_name']}")
     elif record.get("scene_token"):
-        caption_parts.append(f"场景标识: {record['scene_token']}")
+        caption_parts.append(f"Scene Token: {record['scene_token']}")
     if record.get("camera"):
-        caption_parts.append(f"相机: {record['camera']}")
+        caption_parts.append(f"Camera: {record['camera']}")
     if record.get("scene_description"):
-        caption_parts.append(f"场景描述: {trim_text(record['scene_description'], 110)}")
-    caption_parts.append(f"片段帧数: {len(frame_paths)}")
+        caption_parts.append(f"Scene Description: {trim_text(record['scene_description'], 110)}")
+    caption_parts.append(f"Frame Count: {len(frame_paths)}")
     if clip_path:
-        caption_parts.append(f"生成文件: {clip_path.name}")
+        caption_parts.append(f"Video File: {clip_path.name}")
     return "<br>".join(caption_parts)
 
 
 def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
-    parsed_query = parse_query(text)
-    candidate_scene_tokens, kg_status = get_candidate_scene_tokens(parsed_query)
-    query_vector, model_name = encode_text_query(text)
-    hits = search_frame_hits(query_vector, VIDEO_SEARCH_LIMIT, candidate_scene_tokens)
+    timings: dict[str, float] = {}
 
+    stage_started_at = time.perf_counter()
+    parsed_query = parse_query(text)
+    timings["nlp"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
+    candidate_scene_tokens, kg_status = get_candidate_scene_tokens(parsed_query)
+    timings["kg"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
+    query_vector, model_name = encode_text_query(text)
+    timings["clip"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
+    hits = search_frame_hits(query_vector, VIDEO_SEARCH_LIMIT, candidate_scene_tokens)
+    timings["milvus"] = time.perf_counter() - stage_started_at
+
+    stage_started_at = time.perf_counter()
     anchors_by_sequence: dict[tuple[str, str], dict] = {}
     for hit in hits:
         sequence_key = derive_sequence_group_key(hit)
         if sequence_key not in anchors_by_sequence:
             anchors_by_sequence[sequence_key] = hit
+    timings["group"] = time.perf_counter() - stage_started_at
 
+    frame_collection_time = 0.0
+    clip_generation_time = 0.0
     video_results: list[tuple[str, str]] = []
     skipped_unplayable = 0
     for anchor_record in anchors_by_sequence.values():
+        stage_started_at = time.perf_counter()
         frame_paths = collect_video_frames(anchor_record)
+        frame_collection_time += time.perf_counter() - stage_started_at
+
+        stage_started_at = time.perf_counter()
         clip_path = write_video_clip(anchor_record, frame_paths)
+        clip_generation_time += time.perf_counter() - stage_started_at
+
         if clip_path is None:
             skipped_unplayable += 1
             continue
@@ -678,17 +915,22 @@ def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
         if len(video_results) >= VIDEO_RESULT_COUNT:
             break
 
-    if not video_results and anchors_by_sequence:
-        kg_status = f"{kg_status} | 已命中候选帧，但当前环境未生成浏览器兼容的视频片段。"
-    elif skipped_unplayable:
-        kg_status = f"{kg_status} | {skipped_unplayable} 个候选片段因浏览器兼容性被跳过。"
+    timings["frames"] = frame_collection_time
+    timings["clips"] = clip_generation_time
 
-    return video_results, model_name, parsed_query, kg_status
+    if not video_results and anchors_by_sequence:
+        kg_status = f"{kg_status} | Candidate frames were found, but no browser-playable video clips could be generated."
+    elif skipped_unplayable:
+        kg_status = f"{kg_status} | Skipped {skipped_unplayable} clip candidate(s) because they were not browser-playable."
+
+    return video_results, model_name, parsed_query, append_timing_breakdown(kg_status, timings)
+
+
 
 
 MODE_LABELS = {
-    "text2image": "文搜图",
-    "text2video": "文搜视频片段",
+    "text2image": "Text to Image",
+    "text2video": "Text to Video Clip",
 }
 
 
@@ -703,19 +945,20 @@ def status_card(title: str, body: str, note: str = "", tone: str = "neutral") ->
 
 
 INITIAL_STATUS_HTML = status_card(
-    "系统已就绪",
-    "中英双语 CLIP 检索、Neo4j 图谱过滤与 Milvus 帧级搜索均已在线。",
-    f"{INITIAL_STATUS} | 视频模式会根据命中帧序列即时拼接片段。",
-)
+    "System Ready",
+    "Bilingual CLIP retrieval, Neo4j KG filtering, and Milvus frame search are loaded.",
+    f"{INITIAL_STATUS} | Video mode generates short clips from matched frame sequences on demand.",
+    )
 
 STATS_HTML = f"""
 <div class='stats-grid'>
-  <div class='stat-card'><div class='stat-label'>已索引帧</div><div class='stat-value'>{len(ID_TO_RAW_PATH):,}</div><div class='stat-note'>Milvus 中存储的关键帧实体。</div></div>
-  <div class='stat-card'><div class='stat-label'>场景数</div><div class='stat-value'>{len(SCENE_BY_TOKEN)}</div><div class='stat-note'>已对齐官方 nuScenes 场景与图谱结构。</div></div>
-  <div class='stat-card'><div class='stat-label'>查询模型</div><div class='stat-value'>2</div><div class='stat-note'>中文 Chinese-CLIP 与 English-CLIP 自动切换。</div></div>
-  <div class='stat-card'><div class='stat-label'>视频模式</div><div class='stat-value'>动态生成</div><div class='stat-note'>根据命中帧序列即时合成短片段。</div></div>
+  <div class='stat-card'><div class='stat-label'>Indexed Frames</div><div class='stat-value'>{len(ID_TO_RAW_PATH):,}</div><div class='stat-note'>Milvus stores frame entities only.</div></div>
+  <div class='stat-card'><div class='stat-label'>Scenes</div><div class='stat-value'>{len(SCENE_BY_TOKEN)}</div><div class='stat-note'>Aligned with official nuScenes scene metadata.</div></div>
+  <div class='stat-card'><div class='stat-label'>Query Models</div><div class='stat-value'>2</div><div class='stat-note'>Chinese-CLIP and English-CLIP switch automatically.</div></div>
+  <div class='stat-card'><div class='stat-label'>Video Mode</div><div class='stat-value'>Dynamic</div><div class='stat-note'>Clips are generated from matched frame sequences.</div></div>
 </div>
 """
+
 
 custom_css = """
 :root {
@@ -807,19 +1050,29 @@ body, .gradio-container, .gradio-container-5-44-1 {
 
 with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface:
     with gr.Column(elem_classes="app-shell"):
-        gr.HTML("<div class='topbar'><div class='topbar-title'>驾驶场景检索工作台</div><div>知识图谱 + 跨模态驾驶场景检索系统</div></div>")
+        gr.HTML(
+            """
+            <div class='topbar'>
+              <div class='topbar-title'>KG Scene Retrieval</div>
+              <div>Text to image and text to matched-frame video clips.</div>
+            </div>
+            """
+        )
         with gr.Column(elem_classes="hero-card"):
-            gr.HTML("""
+            gr.HTML(
+                """
                 <div class='hero-grid'>
                     <div class='hero-copy'>
-                        <div class='hero-kicker'>知识图谱 × CLIP × Milvus</div>
-                        <div class='hero-title'>用自然语言检索<span>驾驶场景图像与视频片段</span></div>
-                        <div class='hero-subtitle'>融合 Neo4j 候选过滤、Milvus 向量检索与本地中英双语 CLIP 模型，支持中文与英文查询。当前系统提供文搜图，以及基于命中帧序列即时拼接的视频片段检索。</div>
+                        <div class='hero-kicker'>Final Modes · Text to Image / Text to Matched-Frame Video Clip</div>
+                        <div class='hero-title'>Search autonomous driving scenes with natural language<span>Find key frames first, then stitch video clips on demand</span></div>
+                        <div class='hero-subtitle'>
+                            The pipeline parses structured constraints such as weather, time, objects, and location, filters candidate scenes through Neo4j or the local KG, and then uses Chinese-CLIP or English-CLIP with Milvus for frame retrieval. Milvus stores frame entities only; video clips are derived outputs generated after retrieval.
+                        </div>
                         <div class='capability-row'>
-                            <span class='capability-chip'>中文 / English 自动切换</span>
-                            <span class='capability-chip'>知识图谱候选过滤与回退</span>
-                            <span class='capability-chip'>对齐 nuScenes 官方元数据</span>
-                            <span class='capability-chip'>文搜图与文搜视频片段</span>
+                            <span class='capability-chip'>Chinese / English auto switch</span>
+                            <span class='capability-chip'>KG + CLIP hybrid retrieval</span>
+                            <span class='capability-chip'>Local nuScenes data</span>
+                            <span class='capability-chip'>On-demand clip stitching</span>
                         </div>
                     </div>
                     <div class='hero-visual'>
@@ -829,40 +1082,71 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                         <div class='visual-orb orb-green'></div>
                         <div class='visual-stack'>
                             <div class='visual-panel-primary'>
-                                <div class='visual-label'>检索路径</div>
-                                <div class='visual-value'>NLP 解析 → KG 过滤 → CLIP 检索</div>
+                                <div class='visual-label'>Retrieval Pipeline</div>
+                                <div class='visual-value'>NLP parsing -> KG scene filtering -> CLIP vector retrieval</div>
                             </div>
                             <div class='visual-panel-group'>
                                 <div class='visual-panel'>
-                                    <div class='visual-label'>查询语言</div>
-                                    <div class='visual-value'>中文 / English</div>
+                                    <div class='visual-label'>Query Models</div>
+                                    <div class='visual-value'>Chinese-CLIP / English-CLIP</div>
                                 </div>
                                 <div class='visual-panel'>
-                                    <div class='visual-label'>视频结果</div>
-                                    <div class='visual-value'>由命中帧动态拼接</div>
+                                    <div class='visual-label'>Video Output</div>
+                                    <div class='visual-value'>Retrieve frames first, then export browser-playable mp4 clips</div>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            """)
+                """
+            )
             gr.HTML(STATS_HTML)
         with gr.Column(elem_classes="search-card"):
-            gr.HTML("<div class='section-kicker'>检索工作台</div><div class='section-heading'>自然语言查询 + 图谱感知排序</div><div class='section-subtitle'>输入中文或英文场景描述，系统会自动选择编码器，并在提取到结构化条件时优先进行知识图谱过滤。</div>")
+            gr.HTML(
+                """
+                <div class='section-kicker'>Natural Language Retrieval</div>
+                <div class='section-heading'>Enter one sentence to retrieve images or video clips</div>
+                <div class='section-subtitle'>Supports both Chinese and English queries, including weather, time, objects, and location constraints.</div>
+                """
+            )
             with gr.Row(elem_classes="search-row"):
                 with gr.Column(scale=6):
-                    text_input = gr.Textbox(show_label=False, placeholder="例如：雨天夜晚十字路口有行人，或 night driving near a bus stop", lines=2, container=False, elem_id="query-box")
+                    text_input = gr.Textbox(
+                        show_label=False,
+                        placeholder="Example: white day road with cars, or night driving near a bus stop",
+                        lines=2,
+                        container=False,
+                        elem_id="query-box",
+                    )
                 with gr.Column(scale=3, min_width=240):
-                    mode_select = gr.Radio(choices=[("文搜图", "text2image"), ("文搜视频片段", "text2video")], value="text2image", show_label=False, container=False, elem_classes="mode-tabs")
+                    mode_select = gr.Radio(
+                        choices=[("Text to Image", "text2image"), ("Text to Video Clip", "text2video")],
+                        value="text2image",
+                        show_label=False,
+                        container=False,
+                        elem_classes="mode-tabs",
+                    )
             with gr.Row(elem_classes="action-row"):
-                submit_btn = gr.Button("开始检索", variant="primary", elem_id="search-btn")
-                clear_btn = gr.Button("清空", variant="secondary", elem_id="clear-btn")
-            gr.HTML("<div class='search-note'>视频模式返回的是根据命中帧序列即时拼接的短片段。Milvus 中存储的是帧级实体，不是独立视频向量。</div>")
+                submit_btn = gr.Button("Search", variant="primary", elem_id="search-btn")
+                clear_btn = gr.Button("Clear", variant="secondary", elem_id="clear-btn")
+            gr.HTML(
+                """
+                <div class='search-note'>
+                    Image mode returns matched frames directly. Video mode retrieves frames first and then stitches short clips by scene and temporal proximity. When KG filtering returns out-of-dataset scene tokens or too few candidates, the pipeline falls back to local filtering or full-collection search instead of collapsing to zero hits.
+                </div>
+                """
+            )
         status_panel = gr.HTML(value=INITIAL_STATUS_HTML, elem_id="status-panel")
         with gr.Column(elem_classes="results-shell"):
-            gr.HTML("<div class='results-kicker'>检索结果</div><div class='results-heading'>带结构化场景信息的高置信度命中</div><div class='results-subtitle'>图像结果展示关键帧与元数据；视频结果展示围绕高分命中帧自动拼接出的短片段。</div>")
+            gr.HTML(
+                """
+                <div class='results-kicker'>Results</div>
+                <div class='results-heading'>Frame and video clip results</div>
+                <div class='results-subtitle'>Image results show top matched frames. Video results show mp4 clips derived from matched frame sequences.</div>
+                """
+            )
             with gr.Column(visible=True, elem_id="image_result_zone") as image_result_zone:
-                gr.HTML("<div class='result-zone-title'>图像结果</div>")
+                gr.HTML("<div class='result-zone-title'>Image Results</div>")
                 image_outputs = []
                 image_caption_outputs = []
                 with gr.Row(elem_classes="image-grid"):
@@ -873,7 +1157,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                             image_outputs.append(image_component)
                             image_caption_outputs.append(image_caption)
             with gr.Column(visible=False, elem_id="video_result_zone") as video_result_zone:
-                gr.HTML("<div class='result-zone-title'>视频片段结果</div>")
+                gr.HTML("<div class='result-zone-title'>Video Results</div>")
                 video_outputs = []
                 video_caption_outputs = []
                 with gr.Row(elem_classes="video-grid"):
@@ -883,13 +1167,23 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                             video_caption = gr.Markdown(elem_classes="result-meta")
                             video_outputs.append(video_component)
                             video_caption_outputs.append(video_caption)
-        gr.HTML("<div class='footer-note'>本地演示系统。模型从磁盘加载，Milvus 存储帧级实体，视频片段按需由 nuScenes 连续帧即时生成。</div>")
+        gr.HTML(
+            """
+            <div class='footer-note'>
+                Data source: nuScenes mini. Milvus stores image frames only. Video clips are derived outputs generated after retrieval.
+            </div>
+            """
+        )
 
     def update_progress(text: str) -> str:
         query = text.strip()
         if not query:
             return INITIAL_STATUS_HTML
-        return status_card("准备检索", "提交后将执行中英双语 CLIP 检索与知识图谱候选过滤。", f"当前草稿：{trim_text(query, 120)}")
+        return status_card(
+            "Preparing retrieval",
+            "Parsing structured constraints and selecting the appropriate CLIP model.",
+            f"Current query: {trim_text(query, 120)}",
+        )
 
     def switch_result_zone(mode: str):
         return [gr.update(visible=(mode == "text2image")), gr.update(visible=(mode == "text2video"))]
@@ -912,23 +1206,48 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
     def dynamic_retrieve(text: str, mode: str):
         query = text.strip()
         if not query:
-            return build_output_values(status=status_card("请输入查询", "请先输入中文或英文的驾驶场景描述。", "当前支持文搜图和文搜视频片段。", tone="warning"))
+            return build_output_values(
+                status=status_card(
+                    "Enter a query first",
+                    "Type a Chinese or English scene description before retrieval.",
+                    "Structured filters such as weather, time, objects, and location are supported.",
+                    tone="warning",
+                )
+            )
         started_at = time.time()
         try:
             if mode == "text2image":
                 image_results, model_name, parsed_query, kg_status = retrieve_images(query)
                 elapsed = time.time() - started_at
                 parsed_summary = format_parsed_query(parsed_query) or "semantic only"
-                status = status_card("图像检索完成", f"{model_name} 返回 {len(image_results)} 张关键帧，用时 {elapsed:.2f}s。", f"{parsed_summary} | {kg_status}", tone="success" if image_results else "warning")
+                status = status_card(
+                    "Image retrieval complete",
+                    f"{model_name} returned {len(image_results)} image result(s) in {elapsed:.2f}s.",
+                    f"{parsed_summary} | {kg_status}",
+                    tone="success" if image_results else "warning",
+                )
                 return build_output_values(image_results=image_results, status=status)
+
             video_results, model_name, parsed_query, kg_status = retrieve_videos(query)
             elapsed = time.time() - started_at
             parsed_summary = format_parsed_query(parsed_query) or "semantic only"
-            note = f"{parsed_summary} | {kg_status} | 视频结果由命中帧序列即时拼接。"
-            status = status_card("视频片段检索完成", f"{model_name} 返回 {len(video_results)} 个可播放片段，用时 {elapsed:.2f}s。", note, tone="success" if video_results else "warning")
+            note = f"{parsed_summary} | {kg_status} | Video clips are derived from matched frame sequences."
+            status = status_card(
+                "Video retrieval complete",
+                f"{model_name} returned {len(video_results)} video clip(s) in {elapsed:.2f}s.",
+                note,
+                tone="success" if video_results else "warning",
+            )
             return build_output_values(video_results=video_results, status=status)
         except Exception as exc:
-            return build_output_values(status=status_card("检索失败", "当前本地服务未能完成这次请求。", str(exc), tone="warning"))
+            return build_output_values(
+                status=status_card(
+                    "Retrieval failed",
+                    "An exception occurred while running retrieval. Check models, Milvus, Neo4j, and local resources.",
+                    str(exc),
+                    tone="warning",
+                )
+            )
 
     def clear_all():
         return [""] + build_output_values(status=INITIAL_STATUS_HTML)
@@ -939,6 +1258,6 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
     text_input.submit(fn=dynamic_retrieve, inputs=[text_input, mode_select], outputs=image_outputs + image_caption_outputs + video_outputs + video_caption_outputs + [status_panel])
     clear_btn.click(fn=clear_all, outputs=[text_input] + image_outputs + image_caption_outputs + video_outputs + video_caption_outputs + [status_panel])
 
-
 if __name__ == "__main__":
     iface.launch()
+

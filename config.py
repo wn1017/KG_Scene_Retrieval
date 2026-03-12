@@ -1,14 +1,20 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+RESOURCE_FALLBACK_ROOT = Path(r"D:\KG_Scene_Retrieval")
 
-MODELS_DIR = PROJECT_ROOT / "models"
+
+def resolve_resource_dir(local_dir: Path, fallback_dir: Path) -> Path:
+    return local_dir if local_dir.exists() else fallback_dir
+
+
+MODELS_DIR = resolve_resource_dir(PROJECT_ROOT / "models", RESOURCE_FALLBACK_ROOT / "models")
 ENGCLIP_MODEL_DIR = MODELS_DIR / "engclip"
 CHNCLIP_MODEL_DIR = MODELS_DIR / "chnclip"
 CHNCLIP_REPO_ID = "OFA-Sys/chinese-clip-vit-base-patch16"
 
-CSV_DIR = PROJECT_ROOT / "csvdata"
+CSV_DIR = resolve_resource_dir(PROJECT_ROOT / "csvdata", RESOURCE_FALLBACK_ROOT / "csvdata")
 IMAGE_CSV_PATH = CSV_DIR / "nuScenes_v1.0_mini.csv"
 TEXT_CSV_PATH = CSV_DIR / "driving_scene_text.csv"
 
@@ -58,3 +64,6 @@ VIDEO_MAX_FRAMES = 24
 VIDEO_FRAME_STRIDE = 1
 VIDEO_RESULT_COUNT = 3
 VIDEO_SEARCH_LIMIT = 24
+HIT_METADATA_CACHE_SIZE = 4096
+VIDEO_CLIP_CACHE_SIZE = 64
+ENABLE_RETRIEVAL_TIMINGS = True
