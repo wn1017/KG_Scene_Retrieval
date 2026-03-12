@@ -8,6 +8,7 @@ set "SERVICES_ONLY=0"
 set "SERVICE_VARS_FILE=.startup_service_vars.cmd"
 set "DOCKER_WAIT_ATTEMPTS=40"
 set "PORT_WAIT_ATTEMPTS=45"
+set "GRADIO_WAIT_ATTEMPTS=45"
 set "APP_PORT=7860"
 set "ATTU_PORT=8000"
 set "APP_URL=http://127.0.0.1:%APP_PORT%"
@@ -16,6 +17,8 @@ set "NEO4J_BROWSER_URL=http://127.0.0.1:7474"
 set "ATTU_CONTAINER_NAME=attu"
 set "ATTU_MILVUS_URL=host.docker.internal:19530"
 set "DOCKER_ATTU_IMAGE=zilliz/attu:v2.6.3"
+set "GRADIO_STATUS=NOT_STARTED"
+set "GRADIO_STATUS_DETAIL=Gradio has not been launched yet."
 
 :parse_args
 if "%~1"=="" goto after_args
@@ -67,26 +70,6 @@ if not exist "user.yaml" (
     echo [ERROR] Missing user.yaml
     set "MISSING=1"
 )
-if not exist "csvdata\nuScenes_v1.0_mini.csv" (
-    echo [ERROR] Missing csvdata\nuScenes_v1.0_mini.csv
-    set "MISSING=1"
-)
-if not exist "models\engclip\config.json" (
-    echo [ERROR] Missing models\engclip\config.json
-    set "MISSING=1"
-)
-if not exist "models\engclip\pytorch_model.bin" (
-    echo [ERROR] Missing models\engclip\pytorch_model.bin
-    set "MISSING=1"
-)
-if not exist "models\chnclip\config.json" (
-    echo [ERROR] Missing models\chnclip\config.json
-    set "MISSING=1"
-)
-if not exist "models\chnclip\pytorch_model.bin" (
-    echo [ERROR] Missing models\chnclip\pytorch_model.bin
-    set "MISSING=1"
-)
 
 if "%MISSING%"=="1" (
     echo.
@@ -113,7 +96,7 @@ if defined no_proxy (
 set "GRADIO_SERVER_NAME=127.0.0.1"
 set "GRADIO_SERVER_PORT=%APP_PORT%"
 
-call conda run -n kg python -c "from config import APP_PORT, ATTU_CONTAINER_NAME, ATTU_MILVUS_URL, ATTU_PORT, DOCKER_ATTU_IMAGE, DOCKER_MILVUS_HEALTH_PORT, DOCKER_MILVUS_IMAGE, DOCKER_NEO4J_IMAGE, MILVUS_PORT, NEO4J_HTTP_PORT, NEO4J_URI; bolt_port=int(NEO4J_URI.rsplit(':', 1)[1]); lines=[f'set \"APP_PORT={APP_PORT}\"', f'set \"ATTU_CONTAINER_NAME={ATTU_CONTAINER_NAME}\"', f'set \"ATTU_MILVUS_URL={ATTU_MILVUS_URL}\"', f'set \"ATTU_PORT={ATTU_PORT}\"', f'set \"DOCKER_ATTU_IMAGE={DOCKER_ATTU_IMAGE}\"', f'set \"DOCKER_MILVUS_IMAGE={DOCKER_MILVUS_IMAGE}\"', f'set \"DOCKER_NEO4J_IMAGE={DOCKER_NEO4J_IMAGE}\"', f'set \"MILVUS_PORT={MILVUS_PORT}\"', f'set \"NEO4J_HTTP_PORT={NEO4J_HTTP_PORT}\"', f'set \"NEO4J_BOLT_PORT={bolt_port}\"', f'set \"DOCKER_MILVUS_HEALTH_PORT={DOCKER_MILVUS_HEALTH_PORT}\"']; print(*lines, sep='\n')" > "%SERVICE_VARS_FILE%"
+call conda run -n kg python -c "from config import APP_PORT, ATTU_CONTAINER_NAME, ATTU_MILVUS_URL, ATTU_PORT, CHNCLIP_MODEL_DIR, DOCKER_ATTU_IMAGE, DOCKER_MILVUS_HEALTH_PORT, DOCKER_MILVUS_IMAGE, DOCKER_NEO4J_IMAGE, ENGCLIP_MODEL_DIR, IMAGE_CSV_PATH, MILVUS_PORT, NEO4J_HTTP_PORT, NEO4J_URI; bolt_port=int(NEO4J_URI.rsplit(':', 1)[1]); engclip_config=ENGCLIP_MODEL_DIR / 'config.json'; engclip_model=ENGCLIP_MODEL_DIR / 'pytorch_model.bin'; chnclip_config=CHNCLIP_MODEL_DIR / 'config.json'; chnclip_model=CHNCLIP_MODEL_DIR / 'pytorch_model.bin'; lines=[f'set \"APP_PORT={APP_PORT}\"', f'set \"ATTU_CONTAINER_NAME={ATTU_CONTAINER_NAME}\"', f'set \"ATTU_MILVUS_URL={ATTU_MILVUS_URL}\"', f'set \"ATTU_PORT={ATTU_PORT}\"', f'set \"DOCKER_ATTU_IMAGE={DOCKER_ATTU_IMAGE}\"', f'set \"DOCKER_MILVUS_IMAGE={DOCKER_MILVUS_IMAGE}\"', f'set \"DOCKER_NEO4J_IMAGE={DOCKER_NEO4J_IMAGE}\"', f'set \"MILVUS_PORT={MILVUS_PORT}\"', f'set \"NEO4J_HTTP_PORT={NEO4J_HTTP_PORT}\"', f'set \"NEO4J_BOLT_PORT={bolt_port}\"', f'set \"DOCKER_MILVUS_HEALTH_PORT={DOCKER_MILVUS_HEALTH_PORT}\"', f'set \"IMAGE_CSV_PATH={IMAGE_CSV_PATH}\"', f'set \"ENGCLIP_CONFIG_PATH={engclip_config}\"', f'set \"ENGCLIP_MODEL_PATH={engclip_model}\"', f'set \"CHNCLIP_CONFIG_PATH={chnclip_config}\"', f'set \"CHNCLIP_MODEL_PATH={chnclip_model}\"']; print(*lines, sep='\n')" > "%SERVICE_VARS_FILE%"
 if errorlevel 1 (
     echo [ERROR] Failed to load Docker service variables from config.py.
     exit /b 1
@@ -128,6 +111,32 @@ set "APP_URL=http://127.0.0.1:%APP_PORT%"
 set "ATTU_URL=http://127.0.0.1:%ATTU_PORT%"
 set "NEO4J_BROWSER_URL=http://127.0.0.1:%NEO4J_HTTP_PORT%"
 set "GRADIO_SERVER_PORT=%APP_PORT%"
+
+if not exist "%IMAGE_CSV_PATH%" (
+    echo [ERROR] Missing %IMAGE_CSV_PATH%
+    set "MISSING=1"
+)
+if not exist "%ENGCLIP_CONFIG_PATH%" (
+    echo [ERROR] Missing %ENGCLIP_CONFIG_PATH%
+    set "MISSING=1"
+)
+if not exist "%ENGCLIP_MODEL_PATH%" (
+    echo [ERROR] Missing %ENGCLIP_MODEL_PATH%
+    set "MISSING=1"
+)
+if not exist "%CHNCLIP_CONFIG_PATH%" (
+    echo [ERROR] Missing %CHNCLIP_CONFIG_PATH%
+    set "MISSING=1"
+)
+if not exist "%CHNCLIP_MODEL_PATH%" (
+    echo [ERROR] Missing %CHNCLIP_MODEL_PATH%
+    set "MISSING=1"
+)
+if "%MISSING%"=="1" (
+    echo.
+    echo Startup aborted because required files are missing.
+    exit /b 1
+)
 
 if "%START_SERVICES%"=="0" goto after_service_setup
 
@@ -255,10 +264,12 @@ call :stop_existing_app_listener
 if errorlevel 1 exit /b 1
 
 echo [5/5] Launching Gradio app
-call :print_access_urls
-echo [INFO] Web UI may take 20-60 seconds on a cold start while local models load.
-call conda run -n kg python app.py
-exit /b %errorlevel%
+call :launch_gradio_app
+if errorlevel 1 exit /b 1
+call :wait_for_gradio_http
+call :print_launch_summary
+call :hold_console_open
+exit /b 0
 
 :stop_existing_app_listener
 set "APP_LISTENER_PID="
@@ -328,4 +339,59 @@ echo.
 echo [INFO] Web UI: %APP_URL%
 echo [INFO] Attu: %ATTU_URL%
 echo [INFO] Neo4j Browser: %NEO4J_BROWSER_URL%
+exit /b 0
+
+:launch_gradio_app
+set "GRADIO_STATUS=STARTING"
+set "GRADIO_STATUS_DETAIL=Launching Gradio in a separate window."
+echo [INFO] Web UI may take 20-60 seconds on a cold start while local models load.
+start "KG Scene Retrieval App" /min cmd /d /c "cd /d ""%CD%"" && call conda run -n kg python app.py"
+if errorlevel 1 (
+    echo [ERROR] Failed to launch the Gradio app process.
+    exit /b 1
+)
+exit /b 0
+
+:wait_for_gradio_http
+set /a GRADIO_WAIT_COUNT=%GRADIO_WAIT_ATTEMPTS%
+echo [INFO] Waiting for Gradio HTTP endpoint on %APP_URL%...
+:gradio_wait_loop
+call :probe_gradio_http
+if not errorlevel 1 (
+    set "GRADIO_STATUS=AVAILABLE"
+    set "GRADIO_STATUS_DETAIL=Gradio HTTP endpoint is reachable."
+    exit /b 0
+)
+if %GRADIO_WAIT_COUNT% LEQ 0 (
+    set "GRADIO_STATUS=TIMEOUT"
+    set "GRADIO_STATUS_DETAIL=Gradio did not become reachable within the expected time."
+    echo [WARN] Gradio did not become reachable on %APP_URL% in time.
+    exit /b 0
+)
+timeout /t 2 /nobreak >nul
+set /a GRADIO_WAIT_COUNT-=1
+goto gradio_wait_loop
+
+:probe_gradio_http
+powershell -NoProfile -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = Invoke-WebRequest -UseBasicParsing -Uri '%APP_URL%/gradio_api/info' -TimeoutSec 4; if ($response.StatusCode -eq 200) { exit 0 } } catch { }; exit 1"
+exit /b %errorlevel%
+
+:print_launch_summary
+call :print_access_urls
+if "%GRADIO_STATUS%"=="AVAILABLE" (
+    echo [OK] Gradio status: AVAILABLE
+) else (
+    if "%GRADIO_STATUS%"=="TIMEOUT" (
+        echo [WARN] Gradio status: TIMEOUT
+    ) else (
+        echo [WARN] Gradio status: %GRADIO_STATUS%
+    )
+)
+echo [INFO] %GRADIO_STATUS_DETAIL%
+echo [INFO] Leave this window open while the demo is running.
+exit /b 0
+
+:hold_console_open
+if "%KGSR_NO_PAUSE%"=="1" exit /b 0
+pause
 exit /b 0

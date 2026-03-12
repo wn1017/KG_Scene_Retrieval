@@ -1,4 +1,4 @@
-﻿# KG Scene Retrieval
+# KG Scene Retrieval
 
 知识图谱与自然语言驱动的跨模态驾驶场景检索系统。
 
@@ -42,7 +42,6 @@ KG_Scene_Retrieval/
 ├─ scripts/                       # 离线脚本与命令行入口
 │  ├─ evaluate.py
 │  ├─ insert_image.py
-│  ├─ insert_text.py
 │  └─ kg_builder.py
 ├─ src/                           # 内部业务模块
 │  ├─ milvus_utils.py
@@ -168,7 +167,6 @@ conda run -n kg python scripts\evaluate.py path\to\eval.csv --output-dir eval_ou
 ## Notes
 
 - 当前视频检索是“检索帧，再拼接片段”，不是片段级向量库检索。
-- `scripts/insert_text.py` 目前主要用于文本样本解析与实验辅助，不再向主检索 collection 写入文本实体。
 - 如果 `start.bat` 启动后网页短时间不可访问，优先等待模型加载完成，再刷新 `7860` 页面。
 
 ## License
