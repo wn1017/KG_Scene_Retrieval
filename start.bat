@@ -19,6 +19,13 @@ set "ATTU_MILVUS_URL=host.docker.internal:19530"
 set "DOCKER_ATTU_IMAGE=zilliz/attu:v2.6.3"
 set "GRADIO_STATUS=NOT_STARTED"
 set "GRADIO_STATUS_DETAIL=Gradio has not been launched yet."
+set "KGSR_ENABLE_SHARE=0"
+set "KGSR_SHARE_SELECTED="
+set "KGSR_LAUNCH_INFO_FILE=%CD%\.gradio_launch_info.cmd"
+set "GRADIO_LOCAL_URL=%APP_URL%"
+set "GRADIO_SHARE_URL="
+set "GRADIO_SHARE_STATUS=DISABLED"
+set "GRADIO_SHARE_STATUS_DETAIL=Public share link is disabled."
 
 :parse_args
 if "%~1"=="" goto after_args
@@ -30,6 +37,14 @@ if /I "%~1"=="--services" set "START_SERVICES=1"
 if /I "%~1"=="--services-only" (
     set "START_SERVICES=1"
     set "SERVICES_ONLY=1"
+)
+if /I "%~1"=="--share" (
+    set "KGSR_ENABLE_SHARE=1"
+    set "KGSR_SHARE_SELECTED=1"
+)
+if /I "%~1"=="--no-share" (
+    set "KGSR_ENABLE_SHARE=0"
+    set "KGSR_SHARE_SELECTED=1"
 )
 shift
 goto parse_args
@@ -260,6 +275,8 @@ if "%CHECK_ONLY%"=="1" (
     exit /b 0
 )
 
+call :prompt_for_share_mode
+if errorlevel 1 exit /b 1
 call :stop_existing_app_listener
 if errorlevel 1 exit /b 1
 
@@ -267,8 +284,37 @@ echo [5/5] Launching Gradio app
 call :launch_gradio_app
 if errorlevel 1 exit /b 1
 call :wait_for_gradio_http
+call :wait_for_gradio_launch_info
 call :print_launch_summary
 call :hold_console_open
+exit /b 0
+
+:prompt_for_share_mode
+if "%CHECK_ONLY%"=="1" exit /b 0
+if "%SERVICES_ONLY%"=="1" exit /b 0
+if "%KGSR_SHARE_SELECTED%"=="1" goto share_mode_ready
+choice /C YN /N /M "Enable public Gradio share link? [Y/N]"
+if errorlevel 2 (
+    set "KGSR_ENABLE_SHARE=0"
+    set "KGSR_SHARE_SELECTED=1"
+    goto share_mode_ready
+)
+if errorlevel 1 (
+    set "KGSR_ENABLE_SHARE=1"
+    set "KGSR_SHARE_SELECTED=1"
+    goto share_mode_ready
+)
+echo [ERROR] Failed to read the public share selection.
+exit /b 1
+
+:share_mode_ready
+if "%KGSR_ENABLE_SHARE%"=="1" (
+    set "GRADIO_SHARE_STATUS=REQUESTED"
+    set "GRADIO_SHARE_STATUS_DETAIL=Waiting for Gradio to return a public share URL."
+) else (
+    set "GRADIO_SHARE_STATUS=DISABLED"
+    set "GRADIO_SHARE_STATUS_DETAIL=Public share link disabled by user."
+)
 exit /b 0
 
 :stop_existing_app_listener
@@ -335,8 +381,11 @@ set /a ATTU_WAIT_COUNT-=1
 goto attu_wait_loop
 
 :print_access_urls
+if not defined GRADIO_LOCAL_URL set "GRADIO_LOCAL_URL=%APP_URL%"
+if not defined GRADIO_SHARE_URL set "GRADIO_SHARE_URL=not available"
 echo.
-echo [INFO] Web UI: %APP_URL%
+echo [INFO] Web UI: %GRADIO_LOCAL_URL%
+echo [INFO] Share URL: %GRADIO_SHARE_URL%
 echo [INFO] Attu: %ATTU_URL%
 echo [INFO] Neo4j Browser: %NEO4J_BROWSER_URL%
 exit /b 0
@@ -344,7 +393,13 @@ exit /b 0
 :launch_gradio_app
 set "GRADIO_STATUS=STARTING"
 set "GRADIO_STATUS_DETAIL=Launching Gradio in a separate window."
+if exist "%KGSR_LAUNCH_INFO_FILE%" del /q "%KGSR_LAUNCH_INFO_FILE%" >nul 2>&1
 echo [INFO] Web UI may take 20-60 seconds on a cold start while local models load.
+if "%KGSR_ENABLE_SHARE%"=="1" (
+    echo [INFO] Public share link requested. Startup may take a little longer.
+) else (
+    echo [INFO] Public share link disabled for this session.
+)
 start "KG Scene Retrieval App" /min cmd /d /c "cd /d ""%CD%"" && call conda run -n kg python app.py"
 if errorlevel 1 (
     echo [ERROR] Failed to launch the Gradio app process.
@@ -376,6 +431,25 @@ goto gradio_wait_loop
 powershell -NoProfile -Command "$ProgressPreference = 'SilentlyContinue'; try { $response = Invoke-WebRequest -UseBasicParsing -Uri '%APP_URL%/gradio_api/info' -TimeoutSec 4; if ($response.StatusCode -eq 200) { exit 0 } } catch { }; exit 1"
 exit /b %errorlevel%
 
+:wait_for_gradio_launch_info
+set /a GRADIO_INFO_WAIT_COUNT=%GRADIO_WAIT_ATTEMPTS%
+:gradio_info_wait_loop
+if exist "%KGSR_LAUNCH_INFO_FILE%" call "%KGSR_LAUNCH_INFO_FILE%"
+if exist "%KGSR_LAUNCH_INFO_FILE%" (
+    if defined GRADIO_LOCAL_URL set "APP_URL=%GRADIO_LOCAL_URL%"
+    exit /b 0
+)
+if %GRADIO_INFO_WAIT_COUNT% LEQ 0 (
+    if "%KGSR_ENABLE_SHARE%"=="1" (
+        set "GRADIO_SHARE_STATUS=UNREPORTED"
+        set "GRADIO_SHARE_STATUS_DETAIL=The app did not report a public share URL before the summary was printed."
+    )
+    exit /b 0
+)
+timeout /t 1 /nobreak >nul
+set /a GRADIO_INFO_WAIT_COUNT-=1
+goto gradio_info_wait_loop
+
 :print_launch_summary
 call :print_access_urls
 if "%GRADIO_STATUS%"=="AVAILABLE" (
@@ -388,6 +462,8 @@ if "%GRADIO_STATUS%"=="AVAILABLE" (
     )
 )
 echo [INFO] %GRADIO_STATUS_DETAIL%
+echo [INFO] Share status: %GRADIO_SHARE_STATUS%
+echo [INFO] %GRADIO_SHARE_STATUS_DETAIL%
 echo [INFO] Leave this window open while the demo is running.
 exit /b 0
 
