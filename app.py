@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import json
+import os
 from functools import lru_cache
 from html import escape
 import re
@@ -35,8 +36,10 @@ from config import (
     VIDEO_FPS,
     VIDEO_FRAME_STRIDE,
     VIDEO_MAX_FRAMES,
+    VIDEO_OUTPUT_MAX_WIDTH,
     VIDEO_RESULT_COUNT,
     VIDEO_SEARCH_LIMIT,
+    VIDEO_TRANSITION_FRAMES,
 )
 from src.milvus_utils import SEARCH_PARAMS, collection as DEFAULT_COLLECTION, get_or_create_collection, get_search_output_fields, has_field, schema_needs_rebuild
 from src.kg_builder import build_scene_records, filter_scene_records, query_scene_tokens
@@ -321,8 +324,20 @@ def get_cached_hit_metadata(record_id: int, raw_path: str, scene_token_hint: str
 def format_timing_breakdown(timings: dict[str, float]) -> str:
     if not ENABLE_RETRIEVAL_TIMINGS:
         return ""
-    formatted = ", ".join(f"{name}={duration * 1000:.0f}ms" for name, duration in timings.items())
-    return f"timings: {formatted}" if formatted else ""
+    timing_labels = {
+        "nlp": "NLP",
+        "kg": "知识图谱",
+        "clip": "CLIP",
+        "milvus": "Milvus",
+        "decode": "解码",
+        "group": "分组",
+        "frames": "取帧",
+        "clips": "生成视频",
+    }
+    formatted = ", ".join(
+        f"{timing_labels.get(name, name)}={duration * 1000:.0f}ms" for name, duration in timings.items()
+    )
+    return f"耗时：{formatted}" if formatted else ""
 
 
 def append_timing_breakdown(status: str, timings: dict[str, float]) -> str:
@@ -347,6 +362,8 @@ def build_video_clip_cache_key(anchor_record: dict, frame_paths: list[Path]) -> 
         str(VIDEO_FPS),
         str(VIDEO_MAX_FRAMES),
         str(VIDEO_FRAME_STRIDE),
+        str(VIDEO_TRANSITION_FRAMES),
+        str(VIDEO_OUTPUT_MAX_WIDTH),
     )
 
 
@@ -371,21 +388,21 @@ def remember_video_clip(cache_key: tuple[str, ...], clip_path: Path) -> None:
 
 STARTUP_MESSAGES = []
 if MODEL_LOAD_ERROR:
-    STARTUP_MESSAGES.append(f"Model load failed: {MODEL_LOAD_ERROR}")
+    STARTUP_MESSAGES.append(f"模型加载失败：{MODEL_LOAD_ERROR}")
 else:
-    STARTUP_MESSAGES.append(f"Models loaded on {DEVICE.type}")
-STARTUP_MESSAGES.append(f"Image index: {len(ID_TO_RAW_PATH)} rows")
+    STARTUP_MESSAGES.append(f"模型已加载：{DEVICE.type}")
+STARTUP_MESSAGES.append(f"图片索引：{len(ID_TO_RAW_PATH)} 条")
 STARTUP_MESSAGES.append(
-    f"nuScenes metadata: {len(SCENE_BY_TOKEN)} scenes, {len(FILENAME_TO_SAMPLE_DATA)} frame records"
+    f"nuScenes 元数据：{len(SCENE_BY_TOKEN)} 个场景，{len(FILENAME_TO_SAMPLE_DATA)} 条帧记录"
 )
-STARTUP_MESSAGES.append(f"KG scene records: {len(KG_SCENE_RECORDS)}")
+STARTUP_MESSAGES.append(f"知识图谱场景记录：{len(KG_SCENE_RECORDS)} 条")
 if COLLECTION is None:
-    STARTUP_MESSAGES.append(f"Milvus unavailable: {MILVUS_ERROR or 'connection failed'}")
+    STARTUP_MESSAGES.append(f"Milvus 不可用：{MILVUS_ERROR or '连接失败'}")
 else:
-    STARTUP_MESSAGES.append("Milvus collection connected")
+    STARTUP_MESSAGES.append("Milvus 集合已连接")
     if schema_needs_rebuild(COLLECTION):
         STARTUP_MESSAGES.append(
-            "The current collection still uses the legacy schema; metadata filtering may be limited until rebuilt."
+            "当前集合仍使用旧版 schema；在重建前，元数据过滤能力可能受限。"
         )
 INITIAL_STATUS = " | ".join(STARTUP_MESSAGES)
 
@@ -393,15 +410,15 @@ INITIAL_STATUS = " | ".join(STARTUP_MESSAGES)
 def format_parsed_query(parsed_query: dict) -> str:
     parts = []
     if parsed_query.get("weather"):
-        parts.append(f"weather={parsed_query['weather']}")
+        parts.append(f"天气={parsed_query['weather']}")
     if parsed_query.get("time"):
-        parts.append(f"time={parsed_query['time']}")
+        parts.append(f"时段={parsed_query['time']}")
     if parsed_query.get("location"):
-        parts.append(f"location={parsed_query['location']}")
+        parts.append(f"位置={parsed_query['location']}")
     if parsed_query.get("objects"):
-        parts.append("objects=" + ",".join(parsed_query["objects"]))
+        parts.append("对象=" + ",".join(parsed_query["objects"]))
     if not parts:
-        return "No structured filters extracted."
+        return "未提取到结构化条件。"
     return "; ".join(parts)
 
 
@@ -441,7 +458,7 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
     location_kind = parsed_query.get("location")
 
     if not any([weather, timeofday, object_types, location_kind]):
-        return [], "No KG filters extracted; falling back to full-collection search."
+        return [], "未提取到知识图谱过滤条件，已回退到全库搜索。"
 
     try:
         neo4j_tokens = sanitize_candidate_scene_tokens(
@@ -457,9 +474,9 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
             if len(valid_neo4j_tokens) != len(neo4j_tokens):
                 ignored_count = len(neo4j_tokens) - len(valid_neo4j_tokens)
                 return valid_neo4j_tokens, (
-                    f"Neo4j filtered {len(valid_neo4j_tokens)} scene(s) and ignored {ignored_count} invalid token(s)."
+                    f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景，并忽略了 {ignored_count} 个无效 token。"
                 )
-            return valid_neo4j_tokens, f"Neo4j filtered {len(valid_neo4j_tokens)} scene(s)."
+            return valid_neo4j_tokens, f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景。"
         if neo4j_tokens:
             local_tokens = get_local_candidate_scene_tokens(
                 weather=weather,
@@ -468,9 +485,9 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
                 location_kind=location_kind,
             )
             if local_tokens:
-                return local_tokens, f"Neo4j returned out-of-dataset tokens; local KG filtered {len(local_tokens)} scene(s)."
-            return [], "Neo4j returned out-of-dataset scene tokens; falling back to full-collection search."
-        return [], "Neo4j did not find any candidate scenes; falling back to full-collection search."
+                return local_tokens, f"Neo4j 返回了库外 token，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。"
+            return [], "Neo4j 返回了库外 scene token，已回退到全库搜索。"
+        return [], "Neo4j 未找到候选场景，已回退到全库搜索。"
     except RuntimeError:
         local_tokens = get_local_candidate_scene_tokens(
             weather=weather,
@@ -479,8 +496,8 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
             location_kind=location_kind,
         )
         if local_tokens:
-            return local_tokens, f"Neo4j unavailable; local KG filtered {len(local_tokens)} scene(s)."
-        return [], "Neo4j unavailable and local KG found no candidate scenes; falling back to full-collection search."
+                return local_tokens, f"Neo4j 不可用，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。"
+        return [], "Neo4j 不可用且本地知识图谱未找到候选场景，已回退到全库搜索。"
 
 
 def build_scene_filter_expr(scene_tokens: list[str]) -> str:
@@ -631,24 +648,23 @@ def search_frame_hits(query_vector: np.ndarray, limit: int, candidate_scene_toke
             COLLECTION_LOAD_CACHE_IDS.clear()
             raise RuntimeError(f"Milvus collection unavailable: {second_exc}") from second_exc
 
-def build_image_caption(record: dict) -> str:
-    caption_parts = [f"Score: {record['score']:.4f}"]
-    if record.get("camera"):
-        caption_parts.append(f"Camera: {record['camera']}")
+def build_image_caption(
+    record: dict,
+    parsed_query: dict | None = None,
+    kg_status: str = "",
+    model_name: str = "",
+) -> str:
+    caption_parts = [("相似度", f"{record['score']:.4f}")]
+    reason_summary = " / ".join(build_result_reason_tags(record, parsed_query, kg_status, model_name))
+    if reason_summary:
+        caption_parts.append(("命中条件", reason_summary))
     if record.get("scene_name"):
-        caption_parts.append(f"Scene: {record['scene_name']}")
+        caption_parts.append(("场景", str(record["scene_name"])))
     elif record.get("scene_token"):
-        caption_parts.append(f"Scene Token: {record['scene_token']}")
-    if record.get("weather"):
-        caption_parts.append(f"Weather: {record['weather']}")
-    if record.get("timeofday"):
-        caption_parts.append(f"Time: {record['timeofday']}")
-    if record.get("obj_types"):
-        caption_parts.append(f"Objects: {trim_text(record['obj_types'], 70)}")
-    frame_name = Path(record.get("resolved_frame_path") or record.get("raw_frame_path") or "").name
-    if frame_name:
-        caption_parts.append(f"Frame File: {frame_name}")
-    return "<br>".join(caption_parts)
+        caption_parts.append(("场景", str(record["scene_token"])))
+    if record.get("camera"):
+        caption_parts.append(("相机", str(record["camera"])))
+    return build_result_details_html(caption_parts[:4])
 
 
 def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict, str]:
@@ -677,7 +693,7 @@ def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict
         if not resolved_path:
             continue
         image = Image.open(resolved_path).convert("RGB")
-        image_results.append((image, build_image_caption(hit)))
+        image_results.append((image, build_image_caption(hit, parsed_query, kg_status, model_name)))
         if len(image_results) >= IMAGE_RESULT_COUNT:
             break
     timings["decode"] = time.perf_counter() - stage_started_at
@@ -701,13 +717,13 @@ def collect_video_frames(anchor_record: dict) -> list[Path]:
     sample_data = get_sample_data_for_frame(resolved_path, anchor_record.get("raw_frame_path"))
 
     if not sample_data:
-        return [resolved_path] * max(8, VIDEO_FPS * 2) if resolved_path and resolved_path.exists() else []
+        return [resolved_path] if resolved_path and resolved_path.exists() else []
 
     scene_token = anchor_record.get("scene_token") or sample_data.get("scene_token", "")
     camera = anchor_record.get("camera") or sample_data.get("camera", "") or PRIMARY_CAMERA
     sequence = CAMERA_SEQUENCES.get((scene_token, camera), [])
     if not sequence:
-        return [resolved_path] * max(8, VIDEO_FPS * 2) if resolved_path and resolved_path.exists() else []
+        return [resolved_path] if resolved_path and resolved_path.exists() else []
 
     anchor_token = sample_data.get("sample_data_token", "")
     anchor_index = None
@@ -726,14 +742,46 @@ def collect_video_frames(anchor_record: dict) -> list[Path]:
     start_index = max(0, end_index - VIDEO_MAX_FRAMES)
 
     frame_paths = []
+    seen_paths: set[str] = set()
     for item in sequence[start_index:end_index:VIDEO_FRAME_STRIDE]:
         frame_path = NUSCENES_ROOT / item["filename"]
-        if frame_path.exists():
+        normalized_path = str(frame_path)
+        if frame_path.exists() and normalized_path not in seen_paths:
             frame_paths.append(frame_path)
+            seen_paths.add(normalized_path)
 
-    if len(frame_paths) == 1:
-        frame_paths = frame_paths * max(8, VIDEO_FPS * 2)
     return frame_paths
+
+
+def resize_video_frame(frame: np.ndarray) -> np.ndarray:
+    if not VIDEO_OUTPUT_MAX_WIDTH:
+        return frame
+    height, width = frame.shape[:2]
+    if width <= VIDEO_OUTPUT_MAX_WIDTH:
+        return frame
+    scaled_height = max(1, int(round(height * (VIDEO_OUTPUT_MAX_WIDTH / width))))
+    return cv2.resize(frame, (VIDEO_OUTPUT_MAX_WIDTH, scaled_height), interpolation=cv2.INTER_AREA)
+
+
+def prepare_video_render_frames(frame_paths: list[Path]) -> list[np.ndarray]:
+    render_frames: list[np.ndarray] = []
+    previous_path = ""
+
+    for frame_path in frame_paths:
+        frame = cv2.imread(str(frame_path))
+        if frame is None:
+            continue
+        frame = resize_video_frame(frame)
+        current_path = str(frame_path)
+        if current_path == previous_path:
+            continue
+
+        render_frames.append(frame)
+        previous_path = current_path
+
+    if len(render_frames) == 1:
+        render_frames = render_frames * max(2, VIDEO_FPS * 2)
+    return render_frames
 
 
 def sanitize_filename(value: str) -> str:
@@ -780,11 +828,11 @@ def is_browser_playable_clip(video_path: Path) -> bool:
 
 
 def render_video_candidate(output_path: Path, frame_paths: list[Path], codec: str) -> Path | None:
-    first_frame = cv2.imread(str(frame_paths[0]))
-    if first_frame is None:
+    render_frames = prepare_video_render_frames(frame_paths)
+    if not render_frames:
         return None
 
-    height, width = first_frame.shape[:2]
+    height, width = render_frames[0].shape[:2]
     writer = cv2.VideoWriter(str(output_path), cv2.VideoWriter_fourcc(*codec), VIDEO_FPS, (width, height))
     if not writer.isOpened():
         writer.release()
@@ -792,12 +840,9 @@ def render_video_candidate(output_path: Path, frame_paths: list[Path], codec: st
 
     wrote_frames = 0
     try:
-        for frame_path in frame_paths:
-            frame = cv2.imread(str(frame_path))
-            if frame is None:
-                continue
+        for frame in render_frames:
             if frame.shape[:2] != (height, width):
-                frame = cv2.resize(frame, (width, height))
+                frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             writer.write(frame)
             wrote_frames += 1
     finally:
@@ -852,20 +897,27 @@ def write_video_clip(anchor_record: dict, frame_paths: list[Path]) -> Path | Non
 
 
 
-def build_video_caption(record: dict, frame_paths: list[Path], clip_path: Path | None) -> str:
-    caption_parts = [f"Anchor Score: {record['score']:.4f}"]
+def build_video_caption(
+    record: dict,
+    frame_paths: list[Path],
+    clip_path: Path | None,
+    parsed_query: dict | None = None,
+    kg_status: str = "",
+    model_name: str = "",
+) -> str:
+    caption_parts = [("锚点分数", f"{record['score']:.4f}")]
+    reason_summary = " / ".join(build_result_reason_tags(record, parsed_query, kg_status, model_name))
+    if reason_summary:
+        caption_parts.append(("命中条件", reason_summary))
     if record.get("scene_name"):
-        caption_parts.append(f"Scene: {record['scene_name']}")
+        caption_parts.append(("场景", str(record["scene_name"])))
     elif record.get("scene_token"):
-        caption_parts.append(f"Scene Token: {record['scene_token']}")
+        caption_parts.append(("场景", str(record["scene_token"])))
+    clip_summary = f"{len(frame_paths)} 帧"
     if record.get("camera"):
-        caption_parts.append(f"Camera: {record['camera']}")
-    if record.get("scene_description"):
-        caption_parts.append(f"Scene Description: {trim_text(record['scene_description'], 110)}")
-    caption_parts.append(f"Frame Count: {len(frame_paths)}")
-    if clip_path:
-        caption_parts.append(f"Video File: {clip_path.name}")
-    return "<br>".join(caption_parts)
+        clip_summary = f"{record['camera']} · {clip_summary}"
+    caption_parts.append(("片段", clip_summary))
+    return build_result_details_html(caption_parts[:4])
 
 
 def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
@@ -911,7 +963,12 @@ def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
         if clip_path is None:
             skipped_unplayable += 1
             continue
-        video_results.append((str(clip_path), build_video_caption(anchor_record, frame_paths, clip_path)))
+        video_results.append(
+            (
+                str(clip_path),
+                build_video_caption(anchor_record, frame_paths, clip_path, parsed_query, kg_status, model_name),
+            )
+        )
         if len(video_results) >= VIDEO_RESULT_COUNT:
             break
 
@@ -919,9 +976,9 @@ def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
     timings["clips"] = clip_generation_time
 
     if not video_results and anchors_by_sequence:
-        kg_status = f"{kg_status} | Candidate frames were found, but no browser-playable video clips could be generated."
+        kg_status = f"{kg_status} | 已命中候选帧，但未能生成浏览器可播放的视频片段。"
     elif skipped_unplayable:
-        kg_status = f"{kg_status} | Skipped {skipped_unplayable} clip candidate(s) because they were not browser-playable."
+        kg_status = f"{kg_status} | 因浏览器不可播放，已跳过 {skipped_unplayable} 个片段候选。"
 
     return video_results, model_name, parsed_query, append_timing_breakdown(kg_status, timings)
 
@@ -929,132 +986,659 @@ def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
 
 
 MODE_LABELS = {
-    "text2image": "Text to Image",
-    "text2video": "Text to Video Clip",
+    "text2image": "搜索图片",
+    "text2video": "搜索视频片段",
 }
 
 
 def status_card(title: str, body: str, note: str = "", tone: str = "neutral") -> str:
     note_html = f"<div class='status-note'>{escape(note)}</div>" if note else ""
     return (
-        f"<div class='status-card {tone}'>"
-        f"<div class='status-title'>{escape(title)}</div>"
+        f"<details class='status-card {tone}'>"
+        "<summary>"
+        f"<span class='status-title'>{escape(title)}</span>"
+        "<span class='status-toggle'>检索详情</span>"
+        "</summary>"
+        "<div class='status-content'>"
         f"<div class='status-body'>{escape(body)}</div>"
-        f"{note_html}</div>"
+        f"{note_html}</div></details>"
     )
+
+
+def summarize_query_clauses(parsed_query: dict | None) -> list[str]:
+    parsed_query = parsed_query or {}
+    clauses: list[str] = []
+    if parsed_query.get("weather"):
+        clauses.append(f"天气 {parsed_query['weather']}")
+    if parsed_query.get("time"):
+        clauses.append(f"时段 {parsed_query['time']}")
+    if parsed_query.get("location"):
+        clauses.append(f"位置 {parsed_query['location']}")
+    objects = parsed_query.get("objects") or []
+    if objects:
+        clauses.append("对象 " + "/".join(objects[:2]))
+    return clauses or ["仅语义检索"]
+
+
+def summarize_candidate_source(kg_status: str) -> str:
+    status = kg_status or ""
+    if "尚未执行" in status or "提交后确定候选来源" in status:
+        return "待执行"
+    if "本地知识图谱" in status or "本地 KG" in status or "local KG filtered" in status:
+        return "本地知识图谱过滤"
+    if "Neo4j 已过滤出" in status or "Neo4j filtered" in status:
+        return "Neo4j 过滤"
+    if "回退到全库搜索" in status or "falling back to full-collection search" in status:
+        return "全库回退"
+    if "Neo4j 不可用" in status or "Neo4j unavailable" in status:
+        return "Neo4j 降级"
+    if "未提取到知识图谱过滤条件" in status or "未提取到 KG 过滤条件" in status or "No KG filters extracted" in status:
+        return "未使用知识图谱条件"
+    return trim_text(status, 36) if status else "待检索"
+
+
+def build_structured_condition_rows(parsed_query: dict | None) -> list[tuple[str, str]]:
+    parsed_query = parsed_query or {}
+    rows: list[tuple[str, str]] = []
+    if parsed_query.get("weather"):
+        rows.append(("天气", str(parsed_query["weather"])))
+    if parsed_query.get("time"):
+        rows.append(("时段", str(parsed_query["time"])))
+    if parsed_query.get("location"):
+        rows.append(("位置", str(parsed_query["location"])))
+    objects = parsed_query.get("objects") or []
+    if objects:
+        rows.append(("对象", " / ".join(str(item) for item in objects[:3])))
+    return rows
+
+
+def build_kg_filter_rows(parsed_query: dict | None, kg_status: str) -> list[tuple[str, str]]:
+    parsed_query = parsed_query or {}
+    rows: list[tuple[str, str]] = [("执行路径", summarize_candidate_source(kg_status))]
+
+    if parsed_query.get("weather"):
+        rows.append(
+            (
+                "天气条件",
+                f"实体 Scene / Weather · 关系 WEATHER · 属性 Scene.weather, Weather.name · 值 {parsed_query['weather']}",
+            )
+        )
+    if parsed_query.get("time"):
+        rows.append(
+            (
+                "时段条件",
+                f"实体 Scene / TimeOfDay · 关系 TIMEOFDAY · 属性 Scene.timeofday, TimeOfDay.name · 值 {parsed_query['time']}",
+            )
+        )
+    if parsed_query.get("location"):
+        rows.append(
+            (
+                "位置条件",
+                f"实体 Scene / Location · 关系 LOCTYPE · 属性 Scene.location_kind, Location.kind · 值 {parsed_query['location']}",
+            )
+        )
+    objects = parsed_query.get("objects") or []
+    if objects:
+        rows.append(
+            (
+                "对象条件",
+                f"实体 Scene / Object · 关系 CONTAINS · 属性 Object.name · 值 {' / '.join(str(item) for item in objects[:3])}",
+            )
+        )
+
+    if kg_status:
+        rows.append(("系统返回", trim_text(kg_status, 200)))
+    return rows
+
+
+def build_result_reason_tags(
+    record: dict,
+    parsed_query: dict | None = None,
+    kg_status: str = "",
+    model_name: str = "",
+) -> list[str]:
+    parsed_query = parsed_query or {}
+    tags: list[str] = []
+
+    if parsed_query.get("weather") and record.get("weather") == parsed_query["weather"]:
+        tags.append(f"天气 {parsed_query['weather']}")
+    if parsed_query.get("time") and record.get("timeofday") == parsed_query["time"]:
+        tags.append(f"时段 {parsed_query['time']}")
+
+    record_objects = {item.strip() for item in str(record.get("obj_types") or "").split(",") if item.strip()}
+    matched_objects = [obj for obj in parsed_query.get("objects") or [] if obj in record_objects]
+    if matched_objects:
+        tags.append("对象 " + "/".join(matched_objects[:2]))
+
+    record_location = str(record.get("location") or "")
+    if parsed_query.get("location") and parsed_query["location"] in record_location:
+        tags.append(f"位置 {parsed_query['location']}")
+
+    candidate_source = summarize_candidate_source(kg_status)
+    if candidate_source:
+        tags.append(candidate_source)
+
+    unique_tags: list[str] = []
+    for tag in tags:
+        if tag and tag not in unique_tags:
+            unique_tags.append(tag)
+    return unique_tags[:4] or ["视觉语义命中"]
+
+
+def render_key_value_rows(rows: list[tuple[str, str]], empty_text: str) -> str:
+    valid_rows = [(key, value) for key, value in rows if value]
+    if not valid_rows:
+        return f"<div class='detail-empty'>{escape(empty_text)}</div>"
+    return (
+        "<div class='detail-list'>"
+        + "".join(
+            f"<div class='detail-row'><div class='detail-key'>{escape(key)}</div><div class='detail-value'>{escape(value)}</div></div>"
+            for key, value in valid_rows
+        )
+        + "</div>"
+    )
+
+
+def build_result_details_html(rows: list[tuple[str, str]]) -> str:
+    return (
+        "<details class='result-details'>"
+        "<summary>查看详情</summary>"
+        f"<div class='result-detail-list'>{render_key_value_rows(rows, '暂无结果详情')}</div>"
+        "</details>"
+    )
+
+
+def build_explanation_html(
+    parsed_query: dict | None,
+    kg_status: str,
+    model_name: str,
+    mode: str,
+    result_count: int,
+) -> str:
+    nlp_rows = build_structured_condition_rows(parsed_query)
+    kg_rows = build_kg_filter_rows(parsed_query, kg_status)
+    return (
+        "<details class='detail-panel explain-shell'>"
+        "<summary>"
+        "<span class='detail-summary-title'>解析与图谱详情</span>"
+        "<span class='detail-summary-meta'>查看详情</span>"
+        "</summary>"
+        "<div class='detail-stack'>"
+        "<div class='module-card'>"
+        "<div class='module-title'>自然语言解析模块</div>"
+        f"{render_key_value_rows(nlp_rows, '尚未抽取到结构化条件。')}"
+        "</div>"
+        "<div class='module-card'>"
+        "<div class='module-title'>知识图谱过滤模块</div>"
+        f"{render_key_value_rows(kg_rows, '提交检索后展示图谱过滤信息。')}"
+        "</div>"
+        "</div></details>"
+    )
+
+
+def build_preview_explanation(text: str, mode: str) -> str:
+    query = text.strip()
+    if not query:
+        return build_explanation_html({}, "尚未执行知识图谱过滤。", "待命", mode, 0)
+    parsed_query = parse_query(query)
+    return build_explanation_html(parsed_query, "尚未执行知识图谱过滤，提交后展示 Neo4j / 本地知识图谱 / 全库回退。", "待检索", mode, 0)
 
 
 INITIAL_STATUS_HTML = status_card(
-    "System Ready",
-    "Bilingual CLIP retrieval, Neo4j KG filtering, and Milvus frame search are loaded.",
-    f"{INITIAL_STATUS} | Video mode generates short clips from matched frame sequences on demand.",
-    )
+    "系统已就绪",
+    "双语 CLIP、知识图谱过滤与 Milvus 帧检索已准备完成。",
+    INITIAL_STATUS,
+)
+
+INITIAL_EXPLANATION_HTML = build_explanation_html({}, "尚未执行知识图谱过滤。", "待命", "text2image", 0)
 
 STATS_HTML = f"""
 <div class='stats-grid'>
-  <div class='stat-card'><div class='stat-label'>Indexed Frames</div><div class='stat-value'>{len(ID_TO_RAW_PATH):,}</div><div class='stat-note'>Milvus stores frame entities only.</div></div>
-  <div class='stat-card'><div class='stat-label'>Scenes</div><div class='stat-value'>{len(SCENE_BY_TOKEN)}</div><div class='stat-note'>Aligned with official nuScenes scene metadata.</div></div>
-  <div class='stat-card'><div class='stat-label'>Query Models</div><div class='stat-value'>2</div><div class='stat-note'>Chinese-CLIP and English-CLIP switch automatically.</div></div>
-  <div class='stat-card'><div class='stat-label'>Video Mode</div><div class='stat-value'>Dynamic</div><div class='stat-note'>Clips are generated from matched frame sequences.</div></div>
+  <div class='stat-card'><div class='stat-label'>帧</div><div class='stat-value'>{len(ID_TO_RAW_PATH):,}</div></div>
+  <div class='stat-card'><div class='stat-label'>场景</div><div class='stat-value'>{len(SCENE_BY_TOKEN)}</div></div>
+  <div class='stat-card'><div class='stat-label'>模型</div><div class='stat-value'>2</div></div>
+  <div class='stat-card'><div class='stat-label'>视频</div><div class='stat-value'>按需生成</div></div>
 </div>
 """
 
 
 custom_css = """
 :root {
-    --panel: rgba(255,255,255,0.88);
-    --panel-strong: rgba(255,255,255,0.94);
+    --surface: rgba(255,255,255,0.86);
+    --surface-strong: rgba(255,255,255,0.94);
+    --surface-soft: rgba(247,250,255,0.82);
     --line: rgba(32,33,36,0.08);
     --text: #202124;
     --muted: #5f6368;
     --blue: #1a73e8;
+    --blue-deep: #174ea6;
     --blue-soft: #e8f0fe;
-    --shadow: 0 22px 54px rgba(32,33,36,0.10);
-    --radius-xl: 34px;
+    --shadow: 0 22px 60px rgba(60,64,67,0.10);
+    --shadow-soft: 0 14px 36px rgba(60,64,67,0.08);
+    --radius-xl: 36px;
     --radius-lg: 24px;
 }
 body, .gradio-container, .gradio-container-5-44-1 {
     background:
-        radial-gradient(circle at 12% 14%, rgba(66,133,244,0.16) 0%, rgba(66,133,244,0.00) 32%),
-        radial-gradient(circle at 88% 18%, rgba(234,67,53,0.10) 0%, rgba(234,67,53,0.00) 26%),
-        radial-gradient(circle at 82% 78%, rgba(251,188,5,0.11) 0%, rgba(251,188,5,0.00) 28%),
-        radial-gradient(circle at 18% 80%, rgba(52,168,83,0.10) 0%, rgba(52,168,83,0.00) 26%),
-        linear-gradient(180deg, #fbfdff 0%, #f2f6ff 54%, #f7f9fc 100%);
+        radial-gradient(circle at 12% 10%, rgba(66,133,244,0.12) 0%, rgba(66,133,244,0.00) 34%),
+        radial-gradient(circle at 90% 14%, rgba(234,67,53,0.07) 0%, rgba(234,67,53,0.00) 24%),
+        radial-gradient(circle at 84% 76%, rgba(251,188,5,0.08) 0%, rgba(251,188,5,0.00) 22%),
+        radial-gradient(circle at 16% 84%, rgba(52,168,83,0.08) 0%, rgba(52,168,83,0.00) 24%),
+        linear-gradient(180deg, #f9fbff 0%, #f3f7fd 50%, #f7f9fc 100%);
     color: var(--text);
-    font-family: "Microsoft YaHei UI", "PingFang SC", "Segoe UI Variable", sans-serif;
+    font-family: "MiSans", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei UI", "Segoe UI Variable", sans-serif;
 }
-.gradio-container, .gradio-container-5-44-1 { max-width: 1680px !important; padding: 24px 24px 44px !important; }
-.app-shell { gap: 18px; }
-.topbar, .hero-card, .search-card, .results-shell, #status-panel { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); backdrop-filter: blur(18px); }
-.topbar { display:flex; justify-content:space-between; align-items:center; gap:16px; padding: 16px 22px; border-radius: 999px; color: var(--muted); }
-.topbar-title { font-size: 1.24rem; font-weight: 800; color: var(--text); letter-spacing: -0.03em; }
-.hero-card { position: relative; overflow: hidden; border-radius: var(--radius-xl); padding: 40px 42px 36px; }
-.hero-card::before { content:""; position:absolute; inset: 0; background: linear-gradient(135deg, rgba(255,255,255,0.24), rgba(255,255,255,0.02)); pointer-events:none; }
-.hero-grid { position:relative; z-index:1; display:grid; grid-template-columns: minmax(0, 1.18fr) minmax(320px, 0.82fr); gap: 26px; align-items: stretch; }
+body.lightbox-open,
+body.lightbox-open .gradio-container,
+body.lightbox-open .gradio-container-5-44-1 {
+    overflow: hidden !important;
+}
+body.lightbox-open {
+    overscroll-behavior: none !important;
+}
+.gradio-container, .gradio-container-5-44-1 {
+    max-width: 100% !important;
+    padding: 24px 28px 36px !important;
+}
+.app-shell {
+    width: 100% !important;
+    max-width: 1480px !important;
+    margin: 0 auto !important;
+    gap: 14px;
+}
+.topbar, .hero-card, .search-card, .results-shell, #status-panel, #query-detail-panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(22px);
+}
+.topbar {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:18px;
+    padding: 18px 24px;
+    border-radius: 999px;
+    color: var(--muted);
+}
+.brand-lockup { display:flex; align-items:center; gap:14px; min-width: 0; }
+.brand-mark { display:grid; grid-template-columns: repeat(2, 10px); gap:6px; }
+.brand-mark span { width:10px; height:10px; border-radius:999px; display:block; }
+.brand-blue { background:#4285f4; }
+.brand-red { background:#ea4335; }
+.brand-yellow { background:#fbbc04; }
+.brand-green { background:#34a853; }
+.topbar-title { font-size: 1.08rem; font-weight: 800; color: var(--text); letter-spacing: -0.04em; }
+.topbar-subtitle { margin-top: 2px; color: var(--muted); font-size: .88rem; }
+.topbar-note {
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.72);
+    border: 1px solid rgba(26,115,232,0.10);
+    color: var(--blue-deep);
+    font-size: .86rem;
+    font-weight: 600;
+}
+.hero-card { position: relative; overflow: hidden; border-radius: var(--radius-xl); padding: 28px 28px 24px; background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(246,250,255,0.92) 100%); }
+.hero-card::before { content:""; position:absolute; inset: 0; background: linear-gradient(135deg, rgba(255,255,255,0.30), rgba(255,255,255,0.04)); pointer-events:none; }
+.hero-grid { position:relative; z-index:1; display:grid; grid-template-columns: 1fr; gap: 18px; align-items: stretch; }
 .hero-copy { display:flex; flex-direction:column; justify-content:center; }
-.hero-kicker, .section-kicker, .results-kicker { display:inline-flex; width: fit-content; padding:8px 14px; border-radius:999px; background: var(--blue-soft); color: var(--blue); font-size: .86rem; font-weight:700; }
-.hero-title { margin: 18px 0 14px; font-size: clamp(3.05rem, 5.3vw, 5rem); line-height: .95; font-weight: 900; letter-spacing: -0.06em; }
-.hero-title span { display:block; color: var(--blue); }
+.hero-kicker, .section-kicker, .results-kicker {
+    display:inline-flex;
+    width: fit-content;
+    padding:7px 12px;
+    border-radius:999px;
+    background: var(--blue-soft);
+    color: var(--blue);
+    font-size: .82rem;
+    font-weight:700;
+    letter-spacing: .02em;
+}
+.hero-title {
+    margin: 14px 0 0;
+    font-size: clamp(2.2rem, 3.9vw, 3.5rem);
+    line-height: 1.04;
+    font-weight: 900;
+    letter-spacing: -0.07em;
+}
+.hero-title span { display:block; color: var(--blue-deep); }
 .hero-subtitle, .section-subtitle, .results-subtitle, .footer-note, .search-note { color: var(--muted); line-height: 1.8; }
-.capability-row { display:flex; flex-wrap:wrap; gap:10px; margin-top: 20px; }
-.capability-chip { padding: 10px 15px; border-radius:999px; background: rgba(255,255,255,0.84); border:1px solid var(--line); font-size:.92rem; font-weight:600; color: var(--muted); }
-.hero-visual { position:relative; min-height: 340px; border-radius: 30px; overflow: hidden; background: linear-gradient(160deg, rgba(255,255,255,0.80) 0%, rgba(232,240,254,0.72) 32%, rgba(255,255,255,0.70) 100%); border:1px solid rgba(26,115,232,0.10); }
-.hero-visual::before { content:""; position:absolute; inset:-12% auto auto -8%; width: 220px; height:220px; background: radial-gradient(circle, rgba(66,133,244,0.26), rgba(66,133,244,0)); }
-.hero-visual::after { content:""; position:absolute; inset:auto -10% -14% auto; width: 260px; height:260px; background: radial-gradient(circle, rgba(251,188,5,0.22), rgba(251,188,5,0)); }
-.visual-orb { position:absolute; border-radius: 999px; filter: blur(2px); opacity: .82; }
-.orb-blue { width: 140px; height: 140px; top: 34px; right: 44px; background: radial-gradient(circle, rgba(66,133,244,0.28), rgba(66,133,244,0.05)); }
-.orb-red { width: 88px; height: 88px; top: 140px; right: 170px; background: radial-gradient(circle, rgba(234,67,53,0.22), rgba(234,67,53,0.04)); }
-.orb-yellow { width: 96px; height: 96px; bottom: 42px; left: 58px; background: radial-gradient(circle, rgba(251,188,5,0.24), rgba(251,188,5,0.04)); }
-.orb-green { width: 78px; height: 78px; bottom: 94px; right: 92px; background: radial-gradient(circle, rgba(52,168,83,0.20), rgba(52,168,83,0.04)); }
-.visual-stack { position:relative; z-index:2; display:flex; flex-direction:column; justify-content:flex-end; gap:14px; height:100%; padding: 26px; }
-.visual-panel, .visual-panel-primary { background: rgba(255,255,255,0.86); border:1px solid rgba(32,33,36,0.08); border-radius: 22px; box-shadow: 0 18px 44px rgba(66,133,244,0.10); }
-.visual-panel-primary { padding: 18px 18px 16px; }
-.visual-panel-group { display:grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap:12px; }
-.visual-panel { padding: 16px; }
-.visual-label { color:#6b7280; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; }
-.visual-value { margin-top: 8px; font-size:1rem; font-weight:700; line-height:1.55; color: var(--text); }
-.stats-grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:14px; margin-top: 28px; }
-.stat-card { padding: 18px; border-radius: 22px; background: var(--panel-strong); border: 1px solid var(--line); }
-.stat-label { color: #6b7280; font-size:.82rem; letter-spacing:.08em; text-transform:uppercase; margin-bottom: 8px; }
-.stat-value { color: var(--blue); font-size: 2rem; font-weight: 800; letter-spacing: -0.04em; }
-.stat-note { color: var(--muted); line-height: 1.7; }
-.search-card, .results-shell { border-radius: var(--radius-xl); padding: 28px 30px; }
-.section-heading, .results-heading { margin: 14px 0 10px; font-size: 1.24rem; font-weight: 800; letter-spacing: -0.03em; }
-.search-row { align-items: stretch; gap: 14px; }
-#query-box { border-radius: 30px; border:1px solid var(--line); background:#fff; box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 10px 24px rgba(26,115,232,0.07); }
-#query-box textarea { padding: 18px 22px !important; min-height: 88px !important; font-size: 1.04rem !important; line-height:1.72 !important; color: var(--text) !important; }
-.mode-tabs { border-radius: 26px; border:1px solid var(--line); background:#fff; padding: 14px; }
-.mode-tabs label { border-radius:999px !important; border:1px solid var(--line) !important; background:#fff !important; color: var(--muted) !important; font-weight: 700 !important; }
-.mode-tabs label[data-selected="true"] { background: var(--blue-soft) !important; color: var(--blue) !important; }
-.action-row { gap: 12px; margin-top: 10px; }
-#search-btn, #clear-btn { border-radius:999px !important; }
-#search-btn { min-width:150px; background: linear-gradient(135deg, var(--blue) 0%, #4f96ff 100%) !important; color:#fff !important; }
-#clear-btn { min-width:120px; background:#fff !important; color: var(--text) !important; border:1px solid var(--line) !important; }
-#status-panel { border-radius: 26px; padding: 4px; }
-.status-card { border-radius: 22px; padding: 20px 22px; background: linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(248,250,255,0.96) 100%); }
-.status-title { font-size:1.04rem; font-weight:800; color: var(--text); }
-.status-body { margin-top: 10px; color: var(--muted); font-size:.98rem; line-height:1.7; }
-.status-note { margin-top: 12px; color: var(--muted); font-size:.92rem; line-height:1.7; }
-.image-grid, .video-grid { gap: 14px; }
-.image-card, .video-card { padding: 14px; border-radius: var(--radius-lg); background: rgba(255,255,255,0.95); border:1px solid var(--line); box-shadow: 0 14px 34px rgba(31,41,55,0.08); transition: transform .2s ease, box-shadow .2s ease; }
-.image-card:hover, .video-card:hover { transform: translateY(-4px); box-shadow: 0 20px 52px rgba(26,115,232,0.12); }
-.media-frame { border-radius: 16px; overflow:hidden; }
-.media-frame img, .media-frame video { border-radius: 16px !important; object-fit: cover !important; }
-.result-zone-title { margin-bottom: 12px; font-size: 1.02rem; font-weight: 800; color: var(--text); }
-.result-meta { margin-top: 12px; font-size: .94rem; }
-.footer-note { text-align:center; font-size:.92rem; padding-top: 4px; }
-@media (max-width: 1180px) { .hero-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } .hero-visual { min-height: 280px; } }
-@media (max-width: 780px) { .hero-card, .search-card, .results-shell { padding: 22px 18px; } .hero-title { font-size: 2.8rem; } .topbar { flex-direction:column; align-items:flex-start; border-radius:28px; } .visual-panel-group { grid-template-columns: 1fr; } }
-@media (max-width: 640px) { .gradio-container, .gradio-container-5-44-1 { padding: 14px 12px 26px !important; } .stats-grid { grid-template-columns: 1fr; } }
+.hero-subtitle { max-width: 620px; font-size: .98rem; margin-top: 12px; }
+.capability-row { display:flex; flex-wrap:wrap; gap:10px; margin-top: 18px; }
+.capability-chip { padding: 8px 12px; border-radius:999px; background: rgba(255,255,255,0.82); border:1px solid rgba(32,33,36,0.08); font-size:.86rem; font-weight:600; color: #4c5664; box-shadow: 0 8px 20px rgba(66,133,244,0.06); }
+.hero-visual { display: none; }
+.stats-grid { display:grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap:10px; margin-top: 18px; }
+.stat-card { padding: 14px 16px; border-radius: 18px; background: var(--surface-strong); border: 1px solid var(--line); box-shadow: var(--shadow-soft); }
+.stat-label { color: #6b7280; font-size:.78rem; letter-spacing:.08em; margin-bottom: 4px; }
+.stat-value { color: var(--blue-deep); font-size: 1.18rem; font-weight: 800; letter-spacing: -0.04em; }
+.stat-note { display:none; }
+.search-card, .results-shell { border-radius: var(--radius-xl); padding: 20px 22px; }
+.section-heading, .results-heading { margin: 10px 0 0; font-size: 1.18rem; font-weight: 800; letter-spacing: -0.04em; }
+#query-box {
+    border-radius: 32px;
+    border:1px solid var(--line);
+    background:#fff;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 10px 28px rgba(26,115,232,0.08);
+    transition: border-color .2s ease, box-shadow .2s ease;
+}
+#query-box:focus-within { border-color: rgba(26,115,232,0.36); box-shadow: inset 0 1px 0 rgba(255,255,255,0.8), 0 12px 34px rgba(26,115,232,0.12); }
+#query-box textarea { padding: 16px 20px !important; min-height: 84px !important; font-size: 1rem !important; line-height:1.7 !important; color: var(--text) !important; }
+#query-box textarea::placeholder { color: #9097a3 !important; }
+.control-row { align-items: center; gap: 12px; margin-top: 12px; }
+.mode-tabs { border-radius: 24px; border:1px solid var(--line); background:#fff; padding: 10px; box-shadow: var(--shadow-soft); }
+.mode-tabs label { border-radius:999px !important; border:1px solid rgba(32,33,36,0.08) !important; background:#fff !important; color: var(--muted) !important; font-weight: 700 !important; min-height: 44px !important; }
+.mode-tabs label[data-selected="true"] { background: var(--blue-soft) !important; color: var(--blue) !important; border-color: rgba(26,115,232,0.10) !important; }
+#search-btn, #clear-btn { border-radius:999px !important; font-weight: 700 !important; min-height: 46px !important; }
+#search-btn {
+    min-width:144px;
+    background: linear-gradient(135deg, var(--blue) 0%, #4f96ff 100%) !important;
+    color:#fff !important;
+    box-shadow: 0 12px 26px rgba(26,115,232,0.22);
+}
+#clear-btn { min-width:104px; background:#fff !important; color: var(--text) !important; border:1px solid var(--line) !important; }
+#status-panel, #query-detail-panel { border-radius: 26px; padding: 4px; }
+.status-card, .detail-panel {
+    border-radius: 22px;
+    padding: 18px 20px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(248,250,255,0.96) 100%);
+    border: 1px solid rgba(32,33,36,0.06);
+}
+.status-card.success { border-color: rgba(52,168,83,0.18); background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(243,250,245,0.98) 100%); }
+.status-card.warning { border-color: rgba(251,188,5,0.22); background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(255,249,236,0.96) 100%); }
+.status-card summary,
+.detail-panel summary,
+.result-details summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+}
+.status-card summary::-webkit-details-marker,
+.detail-panel summary::-webkit-details-marker,
+.result-details summary::-webkit-details-marker {
+    display: none;
+}
+.status-title,
+.detail-summary-title {
+    font-size: 1rem;
+    font-weight: 800;
+    color: var(--text);
+}
+.status-toggle,
+.detail-summary-meta {
+    color: var(--blue-deep);
+    font-size: .84rem;
+    font-weight: 700;
+}
+.status-content,
+.detail-stack,
+.result-detail-list {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(32,33,36,0.06);
+}
+.status-body { color: var(--muted); font-size:.98rem; line-height:1.7; }
+.status-note { margin-top: 10px; color: var(--muted); font-size:.92rem; line-height:1.7; }
+.detail-stack {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+.module-card {
+    padding: 14px;
+    border-radius: 18px;
+    background: rgba(255,255,255,0.92);
+    border: 1px solid rgba(32,33,36,0.06);
+    box-shadow: var(--shadow-soft);
+}
+.module-title {
+    margin-bottom: 10px;
+    font-size: .94rem;
+    font-weight: 800;
+    color: var(--text);
+}
+.detail-list { display: grid; gap: 10px; }
+.detail-row,
+.result-detail-row {
+    display: grid;
+    grid-template-columns: 84px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+}
+.detail-key,
+.result-detail-key {
+    color: #6b7280;
+    font-size: .82rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+}
+.detail-value,
+.result-detail-value {
+    color: var(--text);
+    font-size: .92rem;
+    line-height: 1.65;
+    word-break: break-word;
+}
+.detail-empty {
+    color: var(--muted);
+    font-size: .92rem;
+    line-height: 1.7;
+}
+#image-grid {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 12px !important;
+    width: 100%;
+}
+#video-grid {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px !important;
+    width: 100%;
+}
+#image-grid > div,
+#video-grid > div {
+    min-width: 0 !important;
+}
+.image-card,
+.video-card {
+    padding: 12px;
+    border-radius: var(--radius-lg);
+    background: rgba(255,255,255,0.96);
+    border:1px solid var(--line);
+    box-shadow: 0 14px 30px rgba(31,41,55,0.08);
+    transition: transform .22s ease, box-shadow .22s ease;
+    min-width: 0 !important;
+}
+.image-card:hover,
+.video-card:hover { transform: translateY(-4px); box-shadow: 0 22px 56px rgba(26,115,232,0.12); }
+.media-frame { border-radius: 16px; min-width: 0; }
+.media-frame img, .media-frame video {
+    border-radius: 16px !important;
+    object-fit: cover !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+.image-card-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 10px;
+}
+.preview-trigger {
+    min-height: 38px !important;
+    border-radius: 999px !important;
+    border: 1px solid rgba(26,115,232,0.14) !important;
+    background: rgba(232,240,254,0.72) !important;
+    color: var(--blue-deep) !important;
+    font-weight: 700 !important;
+}
+.preview-trigger:hover {
+    transform: none !important;
+    background: rgba(232,240,254,0.92) !important;
+}
+.media-frame button {
+    z-index: 3 !important;
+    transition: none !important;
+    transform: none !important;
+}
+.media-frame button:hover {
+    transform: none !important;
+}
+.result-zone-title { margin-bottom: 10px; font-size: .98rem; font-weight: 800; color: var(--text); }
+.result-meta { margin-top: 10px; }
+.result-details {
+    border: 1px solid rgba(32,33,36,0.06);
+    border-radius: 16px;
+    background: rgba(255,255,255,0.9);
+    padding: 2px 12px 12px;
+}
+.result-details summary {
+    padding-top: 8px;
+    color: var(--blue-deep);
+    font-size: .9rem;
+    font-weight: 700;
+}
+.result-detail-list .detail-list {
+    gap: 8px;
+}
+#image-lightbox {
+    position: fixed !important;
+    inset: 0 !important;
+    z-index: 1200 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 24px !important;
+    background: rgba(248, 250, 252, 0.74) !important;
+    backdrop-filter: blur(14px) saturate(1.05) !important;
+    overflow: hidden !important;
+}
+.image-lightbox-card {
+    width: min(960px, calc(100vw - 48px));
+    max-height: calc(100dvh - 48px);
+    margin: 0 auto;
+    padding: 20px 20px 18px;
+    border-radius: 32px;
+    background: rgba(255,255,255,0.98);
+    border: 1px solid rgba(255,255,255,0.5);
+    box-shadow: 0 32px 96px rgba(15,23,42,0.34);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: hidden;
+}
+.lightbox-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 12px;
+    margin-bottom: 2px;
+}
+.lightbox-heading {
+    color: var(--text);
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+}
+.lightbox-close {
+    position: fixed !important;
+    top: 24px !important;
+    right: 28px !important;
+    z-index: 1210 !important;
+    min-height: 42px !important;
+    border-radius: 999px !important;
+    min-width: 88px !important;
+    width: auto !important;
+    flex: 0 0 auto !important;
+    background: rgba(255,255,255,0.94) !important;
+    color: var(--text) !important;
+    border: 1px solid rgba(32,33,36,0.08) !important;
+    box-shadow: 0 12px 30px rgba(15,23,42,0.12) !important;
+    font-weight: 700 !important;
+}
+.lightbox-media {
+    border-radius: 24px;
+    overflow: hidden;
+    background: linear-gradient(180deg, #f8fbff 0%, #eef3fb 100%);
+    border: 1px solid rgba(32,33,36,0.06);
+    padding: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.lightbox-media img {
+    border-radius: 20px !important;
+    object-fit: contain !important;
+    width: 100% !important;
+    height: auto !important;
+    max-height: calc(100dvh - 320px) !important;
+}
+.lightbox-meta {
+    margin-top: 0;
+    padding: 0 4px 4px;
+    max-height: none;
+    overflow: visible;
+}
+.footer-note { text-align:center; font-size:.88rem; padding-top: 2px; }
+#search-btn, #clear-btn {
+    transition: transform .18s ease, box-shadow .18s ease;
+}
+#search-btn:hover, #clear-btn:hover {
+    transform: translateY(-1px);
+}
+@media (max-width: 1380px) {
+    #image-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 1120px) {
+    #image-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #video-grid,
+    .detail-stack { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 780px) {
+    .hero-card, .search-card, .results-shell { padding: 18px; }
+    .hero-title { font-size: 2.2rem; }
+    .topbar { flex-direction:column; align-items:flex-start; border-radius:30px; }
+    .topbar-note { width: 100%; text-align: center; }
+    .control-row { flex-direction: column; align-items: stretch; }
+    #image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #video-grid,
+    .stats-grid,
+    .detail-stack { grid-template-columns: 1fr; }
+    .detail-row,
+    .result-detail-row { grid-template-columns: 1fr; gap: 4px; }
+}
+@media (max-width: 640px) {
+    .gradio-container, .gradio-container-5-44-1 { padding: 14px 12px 24px !important; }
+    #image-grid { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: 1fr 1fr; }
+    #image-lightbox { padding: 12px !important; }
+    .image-lightbox-card { width: 100%; }
+    .lightbox-close { top: 16px !important; right: 16px !important; }
+}
 """
 
 with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface:
-    with gr.Column(elem_classes="app-shell"):
+    with gr.Column(elem_id="app-shell", elem_classes="app-shell"):
         gr.HTML(
             """
             <div class='topbar'>
-              <div class='topbar-title'>KG Scene Retrieval</div>
-              <div>Text to image and text to matched-frame video clips.</div>
+              <div class='brand-lockup'>
+                <div class='brand-mark'>
+                  <span class='brand-blue'></span>
+                  <span class='brand-red'></span>
+                  <span class='brand-yellow'></span>
+                  <span class='brand-green'></span>
+                </div>
+                <div>
+                  <div class='topbar-title'>知识图谱场景检索</div>
+                  <div class='topbar-subtitle'>更简洁的自动驾驶场景检索工作台</div>
+                </div>
+              </div>
+              <div class='topbar-note'>搜索图片 / 搜索视频片段</div>
             </div>
             """
         )
@@ -1063,16 +1647,15 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                 """
                 <div class='hero-grid'>
                     <div class='hero-copy'>
-                        <div class='hero-kicker'>Final Modes · Text to Image / Text to Matched-Frame Video Clip</div>
-                        <div class='hero-title'>Search autonomous driving scenes with natural language<span>Find key frames first, then stitch video clips on demand</span></div>
+                        <div class='hero-kicker'>知识图谱场景检索</div>
+                        <div class='hero-title'>更快定位驾驶场景</div>
                         <div class='hero-subtitle'>
-                            The pipeline parses structured constraints such as weather, time, objects, and location, filters candidate scenes through Neo4j or the local KG, and then uses Chinese-CLIP or English-CLIP with Milvus for frame retrieval. Milvus stores frame entities only; video clips are derived outputs generated after retrieval.
+                            支持中文、英文、知识图谱过滤与结果命中解释。Milvus 主库存储的是图片帧实体，视频片段按需派生生成。
                         </div>
                         <div class='capability-row'>
-                            <span class='capability-chip'>Chinese / English auto switch</span>
-                            <span class='capability-chip'>KG + CLIP hybrid retrieval</span>
-                            <span class='capability-chip'>Local nuScenes data</span>
-                            <span class='capability-chip'>On-demand clip stitching</span>
+                            <span class='capability-chip'>中英双语自动切换</span>
+                            <span class='capability-chip'>知识图谱 + CLIP 融合检索</span>
+                            <span class='capability-chip'>命中解释可见</span>
                         </div>
                     </div>
                     <div class='hero-visual'>
@@ -1082,17 +1665,17 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                         <div class='visual-orb orb-green'></div>
                         <div class='visual-stack'>
                             <div class='visual-panel-primary'>
-                                <div class='visual-label'>Retrieval Pipeline</div>
-                                <div class='visual-value'>NLP parsing -> KG scene filtering -> CLIP vector retrieval</div>
+                                <div class='visual-label'>检索链路</div>
+                                <div class='visual-value'>NLP 解析 -> 知识图谱过滤 -> CLIP 向量检索</div>
                             </div>
                             <div class='visual-panel-group'>
                                 <div class='visual-panel'>
-                                    <div class='visual-label'>Query Models</div>
-                                    <div class='visual-value'>Chinese-CLIP / English-CLIP</div>
+                                    <div class='visual-label'>查询模型</div>
+                                    <div class='visual-value'>Chinese-CLIP 与 English-CLIP 自动路由</div>
                                 </div>
                                 <div class='visual-panel'>
-                                    <div class='visual-label'>Video Output</div>
-                                    <div class='visual-value'>Retrieve frames first, then export browser-playable mp4 clips</div>
+                                    <div class='visual-label'>视频输出</div>
+                                    <div class='visual-value'>先检索关键帧，再导出浏览器可播放的 mp4 片段</div>
                                 </div>
                             </div>
                         </div>
@@ -1104,91 +1687,130 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         with gr.Column(elem_classes="search-card"):
             gr.HTML(
                 """
-                <div class='section-kicker'>Natural Language Retrieval</div>
-                <div class='section-heading'>Enter one sentence to retrieve images or video clips</div>
-                <div class='section-subtitle'>Supports both Chinese and English queries, including weather, time, objects, and location constraints.</div>
+                <div class='section-kicker'>开始检索</div>
+                <div class='section-heading'>输入一句场景描述</div>
                 """
             )
-            with gr.Row(elem_classes="search-row"):
-                with gr.Column(scale=6):
-                    text_input = gr.Textbox(
-                        show_label=False,
-                        placeholder="Example: white day road with cars, or night driving near a bus stop",
-                        lines=2,
-                        container=False,
-                        elem_id="query-box",
-                    )
-                with gr.Column(scale=3, min_width=240):
+            text_input = gr.Textbox(
+                show_label=False,
+                placeholder="例如：夜间路口有行人；或 urban road with cars in daytime",
+                lines=2,
+                container=False,
+                elem_id="query-box",
+            )
+            with gr.Row(elem_classes="control-row"):
+                with gr.Column(scale=5, min_width=280):
                     mode_select = gr.Radio(
-                        choices=[("Text to Image", "text2image"), ("Text to Video Clip", "text2video")],
+                        choices=[("搜索图片", "text2image"), ("搜索视频片段", "text2video")],
                         value="text2image",
                         show_label=False,
                         container=False,
                         elem_classes="mode-tabs",
                     )
-            with gr.Row(elem_classes="action-row"):
-                submit_btn = gr.Button("Search", variant="primary", elem_id="search-btn")
-                clear_btn = gr.Button("Clear", variant="secondary", elem_id="clear-btn")
-            gr.HTML(
-                """
-                <div class='search-note'>
-                    Image mode returns matched frames directly. Video mode retrieves frames first and then stitches short clips by scene and temporal proximity. When KG filtering returns out-of-dataset scene tokens or too few candidates, the pipeline falls back to local filtering or full-collection search instead of collapsing to zero hits.
-                </div>
-                """
-            )
+                with gr.Column(scale=1, min_width=140):
+                    submit_btn = gr.Button("开始检索", variant="primary", elem_id="search-btn")
+                with gr.Column(scale=1, min_width=110):
+                    clear_btn = gr.Button("清空", variant="secondary", elem_id="clear-btn")
+            query_detail_panel = gr.HTML(value=INITIAL_EXPLANATION_HTML, elem_id="query-detail-panel")
         status_panel = gr.HTML(value=INITIAL_STATUS_HTML, elem_id="status-panel")
         with gr.Column(elem_classes="results-shell"):
             gr.HTML(
                 """
-                <div class='results-kicker'>Results</div>
-                <div class='results-heading'>Frame and video clip results</div>
-                <div class='results-subtitle'>Image results show top matched frames. Video results show mp4 clips derived from matched frame sequences.</div>
+                <div class='results-heading'>检索结果</div>
                 """
             )
             with gr.Column(visible=True, elem_id="image_result_zone") as image_result_zone:
-                gr.HTML("<div class='result-zone-title'>Image Results</div>")
+                gr.HTML("<div class='result-zone-title'>图片结果</div>")
                 image_outputs = []
                 image_caption_outputs = []
-                with gr.Row(elem_classes="image-grid"):
+                image_preview_buttons = []
+                with gr.Row(elem_id="image-grid"):
                     for index in range(IMAGE_RESULT_COUNT):
-                        with gr.Column(min_width=220, elem_classes="image-card"):
-                            image_component = gr.Image(show_label=False, type="pil", height=270, container=False, elem_classes="media-frame")
-                            image_caption = gr.Markdown(elem_classes="result-meta")
+                        with gr.Column(scale=1, min_width=0, elem_classes="image-card"):
+                            image_component = gr.Image(
+                                show_label=False,
+                                type="pil",
+                                height=250,
+                                container=False,
+                                interactive=False,
+                                show_download_button=False,
+                                show_fullscreen_button=False,
+                                elem_classes="media-frame",
+                            )
+                            with gr.Row(elem_classes="image-card-actions"):
+                                preview_button = gr.Button("放大查看", elem_classes="preview-trigger")
+                            image_caption = gr.HTML(elem_classes="result-meta")
                             image_outputs.append(image_component)
                             image_caption_outputs.append(image_caption)
+                            image_preview_buttons.append(preview_button)
+                with gr.Column(visible=False, elem_id="image-lightbox") as image_lightbox:
+                    with gr.Column(elem_classes="image-lightbox-card"):
+                        with gr.Row(elem_classes="lightbox-toolbar"):
+                            gr.HTML("<div class='lightbox-heading'>图片预览</div>")
+                            image_lightbox_close = gr.Button("关闭", elem_classes="lightbox-close")
+                        image_lightbox_image = gr.Image(
+                            show_label=False,
+                            type="pil",
+                            height=560,
+                            container=False,
+                            interactive=False,
+                            show_download_button=False,
+                            show_fullscreen_button=False,
+                            elem_classes="lightbox-media",
+                        )
+                        image_lightbox_caption = gr.HTML(elem_classes="result-meta lightbox-meta")
+                image_preview_outputs = [image_lightbox_image, image_lightbox_caption, image_lightbox]
             with gr.Column(visible=False, elem_id="video_result_zone") as video_result_zone:
-                gr.HTML("<div class='result-zone-title'>Video Results</div>")
+                gr.HTML("<div class='result-zone-title'>视频结果</div>")
                 video_outputs = []
                 video_caption_outputs = []
-                with gr.Row(elem_classes="video-grid"):
+                with gr.Row(elem_id="video-grid"):
                     for index in range(VIDEO_RESULT_COUNT):
-                        with gr.Column(min_width=300, elem_classes="video-card"):
-                            video_component = gr.Video(show_label=False, height=270, container=False, elem_classes="media-frame")
-                            video_caption = gr.Markdown(elem_classes="result-meta")
+                        with gr.Column(scale=1, min_width=0, elem_classes="video-card"):
+                            video_component = gr.Video(
+                                show_label=False,
+                                height=260,
+                                container=False,
+                                show_download_button=False,
+                                elem_classes="media-frame",
+                            )
+                            video_caption = gr.HTML(elem_classes="result-meta")
                             video_outputs.append(video_component)
                             video_caption_outputs.append(video_caption)
         gr.HTML(
             """
             <div class='footer-note'>
-                Data source: nuScenes mini. Milvus stores image frames only. Video clips are derived outputs generated after retrieval.
+                Milvus 仅存图片帧实体；视频片段由命中帧序列即时生成。
             </div>
             """
         )
 
-    def update_progress(text: str) -> str:
+    def update_progress(text: str, mode: str):
         query = text.strip()
         if not query:
-            return INITIAL_STATUS_HTML
-        return status_card(
-            "Preparing retrieval",
-            "Parsing structured constraints and selecting the appropriate CLIP model.",
-            f"Current query: {trim_text(query, 120)}",
-        )
+            return [INITIAL_STATUS_HTML, build_preview_explanation("", mode)]
+        return [
+            status_card(
+                "正在准备检索",
+                "正在解析结构化条件并准备检索链路。",
+                f"当前查询：{trim_text(query, 120)}",
+            ),
+            build_preview_explanation(query, mode),
+        ]
 
-    def switch_result_zone(mode: str):
-        return [gr.update(visible=(mode == "text2image")), gr.update(visible=(mode == "text2video"))]
+    def switch_result_zone(mode: str, text: str):
+        return [
+            gr.update(visible=(mode == "text2image")),
+            gr.update(visible=(mode == "text2video")),
+            build_preview_explanation(text, mode),
+        ]
 
-    def build_output_values(image_results: list[tuple[Image.Image, str]] | None = None, video_results: list[tuple[str, str]] | None = None, status: str = INITIAL_STATUS_HTML) -> list:
+    def build_output_values(
+        image_results: list[tuple[Image.Image, str]] | None = None,
+        video_results: list[tuple[str, str]] | None = None,
+        status: str = INITIAL_STATUS_HTML,
+        explanation: str = INITIAL_EXPLANATION_HTML,
+    ) -> list:
         image_results = image_results or []
         video_results = video_results or []
         values: list = []
@@ -1200,64 +1822,195 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
             values.append(video_results[index][0] if index < len(video_results) else None)
         for index in range(VIDEO_RESULT_COUNT):
             values.append(video_results[index][1] if index < len(video_results) else "")
+        values.append(None)
+        values.append("")
+        values.append(gr.update(visible=False))
         values.append(status)
+        values.append(explanation)
         return values
+
+    def open_image_preview(image: Image.Image | None, caption: str):
+        if image is None:
+            return [None, "", gr.update(visible=False)]
+        return [image, caption or "", gr.update(visible=True)]
+
+    def close_image_preview():
+        return [None, "", gr.update(visible=False)]
+
+    OPEN_IMAGE_PREVIEW_JS = """
+    (image, caption) => {
+        document.body.classList.add('lightbox-open');
+        document.documentElement.classList.add('lightbox-open');
+        return [image, caption];
+    }
+    """
+
+    CLOSE_IMAGE_PREVIEW_JS = """
+    () => {
+        document.body.classList.remove('lightbox-open');
+        document.documentElement.classList.remove('lightbox-open');
+        return [];
+    }
+    """
 
     def dynamic_retrieve(text: str, mode: str):
         query = text.strip()
         if not query:
             return build_output_values(
                 status=status_card(
-                    "Enter a query first",
-                    "Type a Chinese or English scene description before retrieval.",
-                    "Structured filters such as weather, time, objects, and location are supported.",
+                    "请先输入查询内容",
+                    "请先输入一段中文或英文场景描述，再开始检索。",
+                    "支持天气、时段、对象与位置等结构化条件。",
                     tone="warning",
-                )
+                ),
+                explanation=build_preview_explanation("", mode),
             )
         started_at = time.time()
         try:
             if mode == "text2image":
                 image_results, model_name, parsed_query, kg_status = retrieve_images(query)
                 elapsed = time.time() - started_at
-                parsed_summary = format_parsed_query(parsed_query) or "semantic only"
+                parsed_summary = format_parsed_query(parsed_query) or "仅语义匹配"
                 status = status_card(
-                    "Image retrieval complete",
-                    f"{model_name} returned {len(image_results)} image result(s) in {elapsed:.2f}s.",
+                    "图片检索完成",
+                    f"{model_name} 返回 {len(image_results)} 张图片结果，用时 {elapsed:.2f}s。",
                     f"{parsed_summary} | {kg_status}",
                     tone="success" if image_results else "warning",
                 )
-                return build_output_values(image_results=image_results, status=status)
+                explanation = build_explanation_html(parsed_query, kg_status, model_name, mode, len(image_results))
+                return build_output_values(image_results=image_results, status=status, explanation=explanation)
 
             video_results, model_name, parsed_query, kg_status = retrieve_videos(query)
             elapsed = time.time() - started_at
-            parsed_summary = format_parsed_query(parsed_query) or "semantic only"
-            note = f"{parsed_summary} | {kg_status} | Video clips are derived from matched frame sequences."
+            parsed_summary = format_parsed_query(parsed_query) or "仅语义匹配"
+            note = f"{parsed_summary} | {kg_status} | 视频片段由命中帧序列派生生成。"
             status = status_card(
-                "Video retrieval complete",
-                f"{model_name} returned {len(video_results)} video clip(s) in {elapsed:.2f}s.",
+                "视频检索完成",
+                f"{model_name} 返回 {len(video_results)} 个视频片段，用时 {elapsed:.2f}s。",
                 note,
                 tone="success" if video_results else "warning",
             )
-            return build_output_values(video_results=video_results, status=status)
+            explanation = build_explanation_html(parsed_query, kg_status, model_name, mode, len(video_results))
+            return build_output_values(video_results=video_results, status=status, explanation=explanation)
         except Exception as exc:
             return build_output_values(
                 status=status_card(
-                    "Retrieval failed",
-                    "An exception occurred while running retrieval. Check models, Milvus, Neo4j, and local resources.",
+                    "检索失败",
+                    "执行检索时发生异常，请检查模型、Milvus、Neo4j 与本地资源。",
                     str(exc),
                     tone="warning",
-                )
+                ),
+                explanation=build_preview_explanation(query, mode),
             )
 
     def clear_all():
-        return [""] + build_output_values(status=INITIAL_STATUS_HTML)
+        return [""] + build_output_values(status=INITIAL_STATUS_HTML, explanation=INITIAL_EXPLANATION_HTML)
 
-    mode_select.change(fn=switch_result_zone, inputs=mode_select, outputs=[image_result_zone, video_result_zone])
-    text_input.change(fn=update_progress, inputs=text_input, outputs=status_panel)
-    submit_btn.click(fn=dynamic_retrieve, inputs=[text_input, mode_select], outputs=image_outputs + image_caption_outputs + video_outputs + video_caption_outputs + [status_panel])
-    text_input.submit(fn=dynamic_retrieve, inputs=[text_input, mode_select], outputs=image_outputs + image_caption_outputs + video_outputs + video_caption_outputs + [status_panel])
-    clear_btn.click(fn=clear_all, outputs=[text_input] + image_outputs + image_caption_outputs + video_outputs + video_caption_outputs + [status_panel])
+    mode_select.change(
+        fn=switch_result_zone,
+        inputs=[mode_select, text_input],
+        outputs=[image_result_zone, video_result_zone, query_detail_panel],
+    )
+    text_input.change(fn=update_progress, inputs=[text_input, mode_select], outputs=[status_panel, query_detail_panel])
+    submit_btn.click(
+        fn=dynamic_retrieve,
+        inputs=[text_input, mode_select],
+        outputs=image_outputs
+        + image_caption_outputs
+        + video_outputs
+        + video_caption_outputs
+        + image_preview_outputs
+        + [status_panel, query_detail_panel],
+    )
+    text_input.submit(
+        fn=dynamic_retrieve,
+        inputs=[text_input, mode_select],
+        outputs=image_outputs
+        + image_caption_outputs
+        + video_outputs
+        + video_caption_outputs
+        + image_preview_outputs
+        + [status_panel, query_detail_panel],
+    )
+    clear_btn.click(
+        fn=clear_all,
+        outputs=[text_input]
+        + image_outputs
+        + image_caption_outputs
+        + video_outputs
+        + video_caption_outputs
+        + image_preview_outputs
+        + [status_panel, query_detail_panel],
+        js=CLOSE_IMAGE_PREVIEW_JS,
+    )
+    for preview_button, image_component, image_caption in zip(image_preview_buttons, image_outputs, image_caption_outputs):
+        preview_button.click(
+            fn=open_image_preview,
+            inputs=[image_component, image_caption],
+            outputs=image_preview_outputs,
+            js=OPEN_IMAGE_PREVIEW_JS,
+        )
+    image_lightbox_close.click(fn=close_image_preview, outputs=image_preview_outputs, js=CLOSE_IMAGE_PREVIEW_JS)
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name, "")
+    if not raw_value:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def write_launch_info(local_url: str, share_url: str, share_enabled: bool, status: str | None = None, detail: str | None = None) -> None:
+    info_path_raw = os.getenv("KGSR_LAUNCH_INFO_FILE", "").strip()
+    if not info_path_raw:
+        return
+
+    if status is None:
+        if share_enabled and share_url:
+            status = "AVAILABLE"
+            detail = detail or "Public share link is ready."
+        elif share_enabled:
+            status = "UNAVAILABLE"
+            detail = detail or "Gradio launched locally but did not return a public share URL."
+        else:
+            status = "DISABLED"
+            detail = detail or "Public share link disabled by user."
+
+    info_lines = [
+        f'set "GRADIO_LOCAL_URL={local_url}"',
+        f'set "GRADIO_SHARE_URL={share_url}"',
+        f'set "GRADIO_SHARE_STATUS={status}"',
+        f'set "GRADIO_SHARE_STATUS_DETAIL={detail}"',
+    ]
+    Path(info_path_raw).write_text("\n".join(info_lines), encoding="utf-8")
+
+
+def launch_interface() -> None:
+    share_enabled = env_flag("KGSR_ENABLE_SHARE")
+    server_name = (os.getenv("GRADIO_SERVER_NAME", "") or "").strip() or None
+    server_port_raw = (os.getenv("GRADIO_SERVER_PORT", "") or "").strip()
+    server_port = int(server_port_raw) if server_port_raw.isdigit() else None
+
+    try:
+        _app, local_url, share_url = iface.launch(
+            share=share_enabled,
+            show_error=True,
+            server_name=server_name,
+            server_port=server_port,
+            prevent_thread_lock=True,
+        )
+        write_launch_info(local_url, share_url or "", share_enabled)
+    except Exception as exc:
+        write_launch_info("", "", share_enabled, status="FAILED", detail=f"Gradio launch failed: {exc}")
+        raise
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
 
 if __name__ == "__main__":
-    iface.launch()
+    launch_interface()
 

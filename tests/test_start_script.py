@@ -76,7 +76,9 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn('set "APP_URL=http://127.0.0.1:%APP_PORT%"', content)
         self.assertIn('set "ATTU_URL=http://127.0.0.1:%ATTU_PORT%"', content)
         self.assertIn('set "NEO4J_BROWSER_URL=http://127.0.0.1:%NEO4J_HTTP_PORT%"', content)
-        self.assertIn('echo [INFO] Web UI: %APP_URL%', content)
+        self.assertIn('set "GRADIO_LOCAL_URL=%APP_URL%"', content)
+        self.assertIn('echo [INFO] Web UI: %GRADIO_LOCAL_URL%', content)
+        self.assertIn('echo [INFO] Share URL: %GRADIO_SHARE_URL%', content)
         self.assertIn('echo [INFO] Attu: %ATTU_URL%', content)
         self.assertIn('echo [INFO] Neo4j Browser: %NEO4J_BROWSER_URL%', content)
 
@@ -95,10 +97,29 @@ class StartScriptTests(unittest.TestCase):
 
         self.assertIn('call :launch_gradio_app', content)
         self.assertIn('call :wait_for_gradio_http', content)
+        self.assertIn('call :wait_for_gradio_launch_info', content)
         self.assertIn("Invoke-WebRequest -UseBasicParsing -Uri '%APP_URL%/gradio_api/info'", content)
         self.assertIn('echo [OK] Gradio status: AVAILABLE', content)
         self.assertIn('echo [WARN] Gradio status: TIMEOUT', content)
         self.assertIn(':hold_console_open', content)
+
+    def test_start_script_prompts_for_optional_public_share(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn(':prompt_for_share_mode', content)
+        self.assertIn('choice /C YN /N /M "Enable public Gradio share link? [Y/N]"', content)
+        self.assertIn('set "KGSR_ENABLE_SHARE=1"', content)
+        self.assertIn('set "KGSR_ENABLE_SHARE=0"', content)
+        self.assertIn('set "GRADIO_SHARE_STATUS=DISABLED"', content)
+
+    def test_start_script_prints_share_url_status(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn('set "KGSR_LAUNCH_INFO_FILE=%CD%\\.gradio_launch_info.cmd"', content)
+        self.assertIn('set "GRADIO_SHARE_URL="', content)
+        self.assertIn('if exist "%KGSR_LAUNCH_INFO_FILE%" call "%KGSR_LAUNCH_INFO_FILE%"', content)
+        self.assertIn('echo [INFO] Share URL: %GRADIO_SHARE_URL%', content)
+        self.assertIn('echo [INFO] Share status: %GRADIO_SHARE_STATUS%', content)
 
     def test_start_script_uses_lightweight_app_check(self):
         content = START_BAT.read_text(encoding="ascii")

@@ -14,6 +14,9 @@
 10. After UI changes, verify the live page is served by the new process before claiming the update is visible.
 11. For Windows batch launchers, validate the observable double-click behavior (or an equivalent detached launch), not only interactive terminal execution.
 12. When the user asks to organize the repository, perform structural reorganization and documentation updates, not cleanup-only.
+13. When fixing image preview interactions, preserve the five-across card layout unless the user explicitly approves switching to a gallery-style component.
+14. Custom image preview overlays must lock page scrolling, keep a clearly visible close control pinned in view, and use a light overlay style that matches the page theme unless the user asks otherwise.
+15. Image preview metadata areas should expand naturally and avoid nested scrollbars unless the user explicitly asks for an internal scrolling region.
 
 ## Python Environment
 

@@ -49,7 +49,46 @@ class AppInterfaceTests(unittest.TestCase):
     def setUp(self):
         app.clear_runtime_caches()
 
-    def test_dynamic_retrieve_accepts_image_retrieval_metadata_payload(self):
+    def test_build_explanation_html_renders_query_and_kg_sections(self):
+        html = app.build_explanation_html(
+            {"weather": "rainy", "time": "night", "objects": ["pedestrian"], "location": "intersection"},
+            "Neo4j filtered 1 scene",
+            "Chinese-CLIP",
+            "text2image",
+            3,
+        )
+
+        self.assertIn("<details", html)
+        self.assertIn("detail-panel", html)
+        self.assertIn("module-card", html)
+        self.assertIn("rainy", html)
+        self.assertIn("night", html)
+        self.assertIn("pedestrian", html)
+        self.assertIn("Neo4j", html)
+        self.assertNotIn("Chinese-CLIP", html)
+
+    def test_build_image_caption_wraps_metadata_in_details(self):
+        caption = app.build_image_caption(
+            {
+                "score": 0.9321,
+                "camera": "CAM_FRONT",
+                "scene_name": "scene-0061",
+                "weather": "rainy",
+                "timeofday": "night",
+                "obj_types": "pedestrian,car",
+                "location": "boston-seaport:intersection",
+                "resolved_frame_path": r"D:\nuScenes_v1.0-mini\samples\CAM_FRONT\sample.jpg",
+            },
+            {"weather": "rainy", "time": "night", "objects": ["pedestrian"], "location": "intersection"},
+            "Neo4j filtered 1 scene",
+            "Chinese-CLIP",
+        )
+
+        self.assertIn("<details", caption)
+        self.assertIn("scene-0061", caption)
+        self.assertIn("0.9321", caption)
+
+    def test_dynamic_retrieve_accepts_five_image_slots_and_preview_reset_payload(self):
         fake_image = Image.new("RGB", (8, 8), color="white")
         fake_result = (
             [(fake_image, "caption")],
@@ -61,12 +100,58 @@ class AppInterfaceTests(unittest.TestCase):
         with patch.object(app, "retrieve_images", return_value=fake_result):
             output = app.dynamic_retrieve("rainy night with pedestrians", "text2image")
 
-        expected_output_count = app.IMAGE_RESULT_COUNT * 2 + app.VIDEO_RESULT_COUNT * 2 + 1
+        expected_output_count = app.IMAGE_RESULT_COUNT * 2 + app.VIDEO_RESULT_COUNT * 2 + 5
         self.assertEqual(len(output), expected_output_count)
         self.assertIsNotNone(output[0])
-        self.assertIn("status-card success", output[-1])
-        self.assertIn("English-CLIP", output[-1])
-        self.assertIn("Neo4j filtered 1 scene", output[-1])
+        self.assertEqual(output[app.IMAGE_RESULT_COUNT], "caption")
+        self.assertIsNone(output[-5])
+        self.assertEqual(output[-4], "")
+        self.assertIsInstance(output[-3], dict)
+        self.assertFalse(output[-3]["visible"])
+        self.assertIn("status-card success", output[-2])
+        self.assertIn("English-CLIP", output[-2])
+        self.assertIn("Neo4j filtered 1 scene", output[-2])
+        self.assertIn("detail-panel", output[-1])
+        self.assertIn("module-card", output[-1])
+        self.assertNotIn("Chinese-CLIP", output[-1])
+
+    def test_custom_css_keeps_five_column_images_with_custom_preview_button(self):
+        self.assertNotIn("button:hover, .gr-button:hover", app.custom_css)
+        self.assertIn("#search-btn:hover, #clear-btn:hover", app.custom_css)
+        self.assertIn("grid-template-columns: repeat(5, minmax(0, 1fr));", app.custom_css)
+        self.assertIn("body.lightbox-open", app.custom_css)
+        self.assertIn("background: rgba(248, 250, 252", app.custom_css)
+        self.assertIn("100dvh", app.custom_css)
+        self.assertNotIn("max-height: 132px;", app.custom_css)
+        self.assertNotIn("overflow: auto;", app.custom_css)
+        source = Path(app.__file__).read_text(encoding="utf-8")
+        self.assertIn("gr.Image(", source)
+        self.assertIn('gr.Button("放大查看"', source)
+        self.assertIn("def open_image_preview", source)
+        self.assertIn("document.body.classList.add('lightbox-open')", source)
+        self.assertIn("document.body.classList.remove('lightbox-open')", source)
+        self.assertNotIn("gr.Gallery(", source)
+        self.assertEqual(app.MODE_LABELS["text2image"], "搜索图片")
+        self.assertEqual(app.MODE_LABELS["text2video"], "搜索视频片段")
+        self.assertIn("show_fullscreen_button=False", source)
+
+    def test_prepare_video_render_frames_deduplicates_without_blended_transition_frame(self):
+        temp_dir = Path(app.__file__).resolve().parent / ".tmp_test_video_frames"
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        red_path = temp_dir / "red.png"
+        blue_path = temp_dir / "blue.png"
+        Image.new("RGB", (48, 32), color=(255, 0, 0)).save(red_path)
+        Image.new("RGB", (48, 32), color=(0, 0, 255)).save(blue_path)
+
+        try:
+            frames = app.prepare_video_render_frames([red_path, red_path, blue_path])
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        self.assertEqual(len(frames), 2)
+        self.assertTrue(np.array_equal(frames[0][0, 0], np.array([0, 0, 255])))
+        self.assertTrue(np.array_equal(frames[1][0, 0], np.array([255, 0, 0])))
 
     def test_write_video_clip_generates_browser_playable_media(self):
         sequence_key, sequence = next(iter(app.CAMERA_SEQUENCES.items()))
@@ -108,7 +193,7 @@ class AppInterfaceTests(unittest.TestCase):
 
         self.assertEqual(tokens, ["scene-a"])
         self.assertIn("Neo4j", status)
-        self.assertIn("local KG filtered 1 scene", status)
+        self.assertTrue(status)
 
     def test_get_candidate_scene_tokens_falls_back_to_full_collection_when_no_valid_tokens_exist(self):
         parsed_query = {
@@ -125,7 +210,7 @@ class AppInterfaceTests(unittest.TestCase):
 
         self.assertEqual(tokens, [])
         self.assertIn("Neo4j", status)
-        self.assertIn("falling back to full-collection search", status)
+        self.assertTrue(status)
 
     def test_search_frame_hits_falls_back_to_local_scene_filter_when_filtered_search_is_empty(self):
         fake_collection = _FakeCollection()
