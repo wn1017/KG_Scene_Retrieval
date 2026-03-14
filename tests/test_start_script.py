@@ -86,11 +86,17 @@ class StartScriptTests(unittest.TestCase):
         content = START_BAT.read_text(encoding="ascii")
 
         self.assertIn("IMAGE_CSV_PATH", content)
+        self.assertIn("NUSCENES_META_DIR", content)
+        self.assertIn("META_SCENE_PATH", content)
+        self.assertIn("META_SAMPLE_PATH", content)
+        self.assertIn("META_SAMPLE_DATA_PATH", content)
+        self.assertIn("META_ANNOTATION_PATH", content)
         self.assertIn("ENGCLIP_CONFIG_PATH", content)
         self.assertIn("ENGCLIP_MODEL_PATH", content)
         self.assertIn("CHNCLIP_CONFIG_PATH", content)
         self.assertIn("CHNCLIP_MODEL_PATH", content)
         self.assertNotIn('if not exist "csvdata\\nuScenes_v1.0_mini.csv"', content)
+        self.assertIn('scripts\\prepare_trainval06_subset.py', content)
 
     def test_start_script_reports_gradio_reachability(self):
         content = START_BAT.read_text(encoding="ascii")
@@ -145,6 +151,11 @@ class StartScriptTests(unittest.TestCase):
     def test_config_exposes_attu_settings(self):
         config_content = (ROOT / "config.py").read_text(encoding="utf-8")
 
+        self.assertIn('TRAINVAL06_SUBSET_NAME = "trainval06_camera_part5"', config_content)
+        self.assertIn('NUSCENES_ROOT = Path(r"D:\\nuScenes_Trainval06")', config_content)
+        self.assertIn('NUSCENES_META_SOURCE_DIR = NUSCENES_ROOT / NUSCENES_VERSION', config_content)
+        self.assertIn('NUSCENES_META_DIR = TRAINVAL06_ASSET_DIR / NUSCENES_VERSION', config_content)
+        self.assertIn('MILVUS_COLLECTION_NAME = "multimodal_search_trainval06_camera_part5"', config_content)
         self.assertIn('DOCKER_ATTU_IMAGE = "zilliz/attu:v2.6.3"', config_content)
         self.assertIn('ATTU_CONTAINER_NAME = "attu"', config_content)
         self.assertIn('ATTU_MILVUS_URL = "host.docker.internal:19530"', config_content)

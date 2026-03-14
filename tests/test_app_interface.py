@@ -77,7 +77,7 @@ class AppInterfaceTests(unittest.TestCase):
                 "timeofday": "night",
                 "obj_types": "pedestrian,car",
                 "location": "boston-seaport:intersection",
-                "resolved_frame_path": r"D:\nuScenes_v1.0-mini\samples\CAM_FRONT\sample.jpg",
+                "resolved_frame_path": str(app.NUSCENES_ROOT / "samples" / "CAM_FRONT" / "sample.jpg"),
             },
             {"weather": "rainy", "time": "night", "objects": ["pedestrian"], "location": "intersection"},
             "Neo4j filtered 1 scene",
@@ -154,6 +154,7 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertTrue(np.array_equal(frames[1][0, 0], np.array([255, 0, 0])))
 
     def test_write_video_clip_generates_browser_playable_media(self):
+        self.assertTrue(app.CAMERA_SEQUENCES)
         sequence_key, sequence = next(iter(app.CAMERA_SEQUENCES.items()))
         scene_token, camera = sequence_key
         frame_paths = [
@@ -252,7 +253,7 @@ class AppInterfaceTests(unittest.TestCase):
             "filename": "samples/CAM_FRONT/match.jpg",
             "sample_data_token": "sample-data-token",
         }
-        resolved_path = Path(r"D:\nuScenes_v1.0-mini\samples\CAM_FRONT\match.jpg")
+        resolved_path = app.NUSCENES_ROOT / "samples" / "CAM_FRONT" / "match.jpg"
 
         with patch.object(app, "resolve_frame_path", return_value=resolved_path) as resolve_mock, patch.object(
             app, "get_sample_data_for_frame", return_value=sample_data
@@ -267,8 +268,8 @@ class AppInterfaceTests(unittest.TestCase):
 
     def test_write_video_clip_reuses_cached_clip_for_same_sequence(self):
         frame_paths = [
-            Path(r"D:\nuScenes_v1.0-mini\samples\CAM_FRONT\frame_0001.jpg"),
-            Path(r"D:\nuScenes_v1.0-mini\samples\CAM_FRONT\frame_0002.jpg"),
+            app.NUSCENES_ROOT / "samples" / "CAM_FRONT" / "frame_0001.jpg",
+            app.NUSCENES_ROOT / "samples" / "CAM_FRONT" / "frame_0002.jpg",
         ]
         anchor_record = {"scene_name": "scene-a", "scene_token": "scene-a", "camera": "CAM_FRONT"}
         cache_dir = Path(app.__file__).resolve().parent / ".tmp_test_video_cache"

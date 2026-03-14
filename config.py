@@ -2,25 +2,30 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-RESOURCE_FALLBACK_ROOT = Path(r"D:\KG_Scene_Retrieval")
+ORIGINAL_PROJECT_ROOT = Path(r"D:\KG_Scene_Retrieval")
 
 
 def resolve_resource_dir(local_dir: Path, fallback_dir: Path) -> Path:
     return local_dir if local_dir.exists() else fallback_dir
 
 
-MODELS_DIR = resolve_resource_dir(PROJECT_ROOT / "models", RESOURCE_FALLBACK_ROOT / "models")
+MODELS_DIR = resolve_resource_dir(PROJECT_ROOT / "models", ORIGINAL_PROJECT_ROOT / "models")
 ENGCLIP_MODEL_DIR = MODELS_DIR / "engclip"
 CHNCLIP_MODEL_DIR = MODELS_DIR / "chnclip"
 CHNCLIP_REPO_ID = "OFA-Sys/chinese-clip-vit-base-patch16"
 
-CSV_DIR = resolve_resource_dir(PROJECT_ROOT / "csvdata", RESOURCE_FALLBACK_ROOT / "csvdata")
-IMAGE_CSV_PATH = CSV_DIR / "nuScenes_v1.0_mini.csv"
+CSV_DIR = PROJECT_ROOT / "csvdata"
+TRAINVAL06_SUBSET_NAME = "trainval06_camera_part5"
+TRAINVAL06_ASSET_DIR = PROJECT_ROOT / "derived_data" / TRAINVAL06_SUBSET_NAME
+IMAGE_CSV_PATH = CSV_DIR / "nuScenes_v1.0_trainval06_camera_part5.csv"
 TEXT_CSV_PATH = CSV_DIR / "driving_scene_text.csv"
 
-NUSCENES_ROOT = Path(r"D:\nuScenes_v1.0-mini")
-NUSCENES_VERSION = "v1.0-mini"
-NUSCENES_META_DIR = NUSCENES_ROOT / NUSCENES_VERSION
+NUSCENES_ROOT = Path(r"D:\nuScenes_Trainval06")
+NUSCENES_VERSION = "v1.0-trainval"
+NUSCENES_META_SOURCE_DIR = NUSCENES_ROOT / NUSCENES_VERSION
+NUSCENES_META_DIR = TRAINVAL06_ASSET_DIR / NUSCENES_VERSION
+NUSCENES_SCENE_TOKEN_PATH = TRAINVAL06_ASSET_DIR / "scene_tokens.json"
+NUSCENES_SUBSET_REPORT_PATH = TRAINVAL06_ASSET_DIR / "subset_report.json"
 NUSCENES_SAMPLES_DIR = NUSCENES_ROOT / "samples"
 NUSCENES_SWEEPS_DIR = NUSCENES_ROOT / "sweeps"
 NUSCENES_MAPS_DIR = NUSCENES_ROOT / "maps"
@@ -30,7 +35,7 @@ APP_PORT = 7860
 ATTU_PORT = 8000
 MILVUS_HOST = "127.0.0.1"
 MILVUS_PORT = 19530
-MILVUS_COLLECTION_NAME = "multimodal_search"
+MILVUS_COLLECTION_NAME = "multimodal_search_trainval06_camera_part5"
 MILVUS_VECTOR_DIM = 512
 MILVUS_INDEX_TYPE = "IVF_FLAT"
 MILVUS_METRIC_TYPE = "IP"
@@ -58,7 +63,7 @@ DOCKER_MINIO_PORT = 9000
 DOCKER_MINIO_CONSOLE_PORT = 9001
 DOCKER_MILVUS_HEALTH_PORT = 9091
 
-GENERATED_VIDEO_DIR = PROJECT_ROOT / "generated_videos"
+GENERATED_VIDEO_DIR = PROJECT_ROOT / "generated_videos" / TRAINVAL06_SUBSET_NAME
 VIDEO_FPS = 6
 VIDEO_MAX_FRAMES = 16
 VIDEO_FRAME_STRIDE = 1
