@@ -17,6 +17,7 @@
 13. When fixing image preview interactions, preserve the five-across card layout unless the user explicitly approves switching to a gallery-style component.
 14. Custom image preview overlays must lock page scrolling, keep a clearly visible close control pinned in view, and use a light overlay style that matches the page theme unless the user asks otherwise.
 15. Image preview metadata areas should expand naturally and avoid nested scrollbars unless the user explicitly asks for an internal scrolling region.
+16. When the user explicitly allows read-only reuse of resources from the original project directory, treat that access as permitted without assuming the original project can be modified.
 
 ## Python Environment
 

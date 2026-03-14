@@ -25,10 +25,33 @@ class _FakeDriver:
 
 
 class KgBuilderTests(unittest.TestCase):
-    def test_filter_scene_records_finds_rainy_night_scene(self):
-        records = kg_builder.build_scene_records()
-        tokens = kg_builder.filter_scene_records(records, weather="rainy", timeofday="night")
-        self.assertEqual(tokens, ["de7d80a1f5fb4c3e82ce8a4f213b450a"])
+    def test_filter_scene_records_matches_all_requested_clauses(self):
+        records = [
+            {
+                "scene_token": "scene-rain-night",
+                "weather": "rainy",
+                "timeofday": "night",
+                "location_kind": "intersection",
+                "objects": {"pedestrian": 2, "car": 1},
+            },
+            {
+                "scene_token": "scene-rain-day",
+                "weather": "rainy",
+                "timeofday": "day",
+                "location_kind": "intersection",
+                "objects": {"pedestrian": 1},
+            },
+        ]
+
+        tokens = kg_builder.filter_scene_records(
+            records,
+            weather="rainy",
+            timeofday="night",
+            object_types=["pedestrian"],
+            location_kind="intersection",
+        )
+
+        self.assertEqual(tokens, ["scene-rain-night"])
 
     def test_write_scene_graph_wraps_neo4j_connection_errors(self):
         original_get_driver = kg_builder.get_neo4j_driver

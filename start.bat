@@ -111,7 +111,7 @@ if defined no_proxy (
 set "GRADIO_SERVER_NAME=127.0.0.1"
 set "GRADIO_SERVER_PORT=%APP_PORT%"
 
-call conda run -n kg python -c "from config import APP_PORT, ATTU_CONTAINER_NAME, ATTU_MILVUS_URL, ATTU_PORT, CHNCLIP_MODEL_DIR, DOCKER_ATTU_IMAGE, DOCKER_MILVUS_HEALTH_PORT, DOCKER_MILVUS_IMAGE, DOCKER_NEO4J_IMAGE, ENGCLIP_MODEL_DIR, IMAGE_CSV_PATH, MILVUS_PORT, NEO4J_HTTP_PORT, NEO4J_URI; bolt_port=int(NEO4J_URI.rsplit(':', 1)[1]); engclip_config=ENGCLIP_MODEL_DIR / 'config.json'; engclip_model=ENGCLIP_MODEL_DIR / 'pytorch_model.bin'; chnclip_config=CHNCLIP_MODEL_DIR / 'config.json'; chnclip_model=CHNCLIP_MODEL_DIR / 'pytorch_model.bin'; lines=[f'set \"APP_PORT={APP_PORT}\"', f'set \"ATTU_CONTAINER_NAME={ATTU_CONTAINER_NAME}\"', f'set \"ATTU_MILVUS_URL={ATTU_MILVUS_URL}\"', f'set \"ATTU_PORT={ATTU_PORT}\"', f'set \"DOCKER_ATTU_IMAGE={DOCKER_ATTU_IMAGE}\"', f'set \"DOCKER_MILVUS_IMAGE={DOCKER_MILVUS_IMAGE}\"', f'set \"DOCKER_NEO4J_IMAGE={DOCKER_NEO4J_IMAGE}\"', f'set \"MILVUS_PORT={MILVUS_PORT}\"', f'set \"NEO4J_HTTP_PORT={NEO4J_HTTP_PORT}\"', f'set \"NEO4J_BOLT_PORT={bolt_port}\"', f'set \"DOCKER_MILVUS_HEALTH_PORT={DOCKER_MILVUS_HEALTH_PORT}\"', f'set \"IMAGE_CSV_PATH={IMAGE_CSV_PATH}\"', f'set \"ENGCLIP_CONFIG_PATH={engclip_config}\"', f'set \"ENGCLIP_MODEL_PATH={engclip_model}\"', f'set \"CHNCLIP_CONFIG_PATH={chnclip_config}\"', f'set \"CHNCLIP_MODEL_PATH={chnclip_model}\"']; print(*lines, sep='\n')" > "%SERVICE_VARS_FILE%"
+call conda run -n kg python -c "from config import APP_PORT, ATTU_CONTAINER_NAME, ATTU_MILVUS_URL, ATTU_PORT, CHNCLIP_MODEL_DIR, DOCKER_ATTU_IMAGE, DOCKER_MILVUS_HEALTH_PORT, DOCKER_MILVUS_IMAGE, DOCKER_NEO4J_IMAGE, ENGCLIP_MODEL_DIR, IMAGE_CSV_PATH, MILVUS_PORT, NEO4J_HTTP_PORT, NEO4J_URI, NUSCENES_META_DIR; bolt_port=int(NEO4J_URI.rsplit(':', 1)[1]); engclip_config=ENGCLIP_MODEL_DIR / 'config.json'; engclip_model=ENGCLIP_MODEL_DIR / 'pytorch_model.bin'; chnclip_config=CHNCLIP_MODEL_DIR / 'config.json'; chnclip_model=CHNCLIP_MODEL_DIR / 'pytorch_model.bin'; meta_scene=NUSCENES_META_DIR / 'scene.json'; meta_sample=NUSCENES_META_DIR / 'sample.json'; meta_sample_data=NUSCENES_META_DIR / 'sample_data.json'; meta_annotation=NUSCENES_META_DIR / 'sample_annotation.json'; lines=[f'set \"APP_PORT={APP_PORT}\"', f'set \"ATTU_CONTAINER_NAME={ATTU_CONTAINER_NAME}\"', f'set \"ATTU_MILVUS_URL={ATTU_MILVUS_URL}\"', f'set \"ATTU_PORT={ATTU_PORT}\"', f'set \"DOCKER_ATTU_IMAGE={DOCKER_ATTU_IMAGE}\"', f'set \"DOCKER_MILVUS_IMAGE={DOCKER_MILVUS_IMAGE}\"', f'set \"DOCKER_NEO4J_IMAGE={DOCKER_NEO4J_IMAGE}\"', f'set \"MILVUS_PORT={MILVUS_PORT}\"', f'set \"NEO4J_HTTP_PORT={NEO4J_HTTP_PORT}\"', f'set \"NEO4J_BOLT_PORT={bolt_port}\"', f'set \"DOCKER_MILVUS_HEALTH_PORT={DOCKER_MILVUS_HEALTH_PORT}\"', f'set \"IMAGE_CSV_PATH={IMAGE_CSV_PATH}\"', f'set \"NUSCENES_META_DIR={NUSCENES_META_DIR}\"', f'set \"META_SCENE_PATH={meta_scene}\"', f'set \"META_SAMPLE_PATH={meta_sample}\"', f'set \"META_SAMPLE_DATA_PATH={meta_sample_data}\"', f'set \"META_ANNOTATION_PATH={meta_annotation}\"', f'set \"ENGCLIP_CONFIG_PATH={engclip_config}\"', f'set \"ENGCLIP_MODEL_PATH={engclip_model}\"', f'set \"CHNCLIP_CONFIG_PATH={chnclip_config}\"', f'set \"CHNCLIP_MODEL_PATH={chnclip_model}\"']; print(*lines, sep='\n')" > "%SERVICE_VARS_FILE%"
 if errorlevel 1 (
     echo [ERROR] Failed to load Docker service variables from config.py.
     exit /b 1
@@ -129,6 +129,22 @@ set "GRADIO_SERVER_PORT=%APP_PORT%"
 
 if not exist "%IMAGE_CSV_PATH%" (
     echo [ERROR] Missing %IMAGE_CSV_PATH%
+    set "MISSING=1"
+)
+if not exist "%META_SCENE_PATH%" (
+    echo [ERROR] Missing %META_SCENE_PATH%
+    set "MISSING=1"
+)
+if not exist "%META_SAMPLE_PATH%" (
+    echo [ERROR] Missing %META_SAMPLE_PATH%
+    set "MISSING=1"
+)
+if not exist "%META_SAMPLE_DATA_PATH%" (
+    echo [ERROR] Missing %META_SAMPLE_DATA_PATH%
+    set "MISSING=1"
+)
+if not exist "%META_ANNOTATION_PATH%" (
+    echo [ERROR] Missing %META_ANNOTATION_PATH%
     set "MISSING=1"
 )
 if not exist "%ENGCLIP_CONFIG_PATH%" (
@@ -149,6 +165,7 @@ if not exist "%CHNCLIP_MODEL_PATH%" (
 )
 if "%MISSING%"=="1" (
     echo.
+    echo [INFO] Run "conda run -n kg python scripts\prepare_trainval06_subset.py" to build the trainval06 subset metadata and CSV.
     echo Startup aborted because required files are missing.
     exit /b 1
 )
