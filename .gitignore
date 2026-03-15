@@ -8,9 +8,15 @@ __pycache__/
 htmlcov/
 *.log
 .startup_service_vars.cmd
+.gradio/
+.gradio_launch_info.cmd
+.tmp_gradio_job_id.txt
+.tmp_gradio_pid.txt
+skills-lock.json
 
 # Local generated outputs
 generated_videos/
+derived_data/
 codec_probe_*/
 _ffmpeg_probe.txt
 _probe_*.py
