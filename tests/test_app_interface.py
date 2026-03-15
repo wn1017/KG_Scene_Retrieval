@@ -49,23 +49,138 @@ class AppInterfaceTests(unittest.TestCase):
     def setUp(self):
         app.clear_runtime_caches()
 
-    def test_build_explanation_html_renders_query_and_kg_sections(self):
+    def test_parse_query_collects_highlight_matches_for_original_terms(self):
+        parsed = app.parse_query("夜间路口有汽车")
+        match_pairs = {(item["text"], item["category"]) for item in parsed["highlight_matches"]}
+
+        self.assertEqual(parsed["time"], "night")
+        self.assertEqual(parsed["location"], "intersection")
+        self.assertIn("car", parsed["objects"])
+        self.assertIn(("夜间", "time"), match_pairs)
+        self.assertIn(("路口", "location"), match_pairs)
+        self.assertIn(("汽车", "object"), match_pairs)
+
+    def test_build_query_highlight_html_renders_marker_markup(self):
+        parsed = app.parse_query("rainy intersection with cars at night")
+        html = app.build_query_highlight_html(parsed)
+
+        self.assertIn("query-highlight-block", html)
+        self.assertIn("总耗时 0.10s", html)
+        self.assertIn("query-marker marker-weather", html)
+        self.assertIn("query-marker marker-time", html)
+        self.assertIn("query-marker marker-location", html)
+        self.assertIn("query-marker marker-object", html)
+        self.assertIn("query-highlight-chip", html)
+        self.assertIn("rainy", html)
+        self.assertIn("cars", html)
+
+    def test_parse_query_matches_extended_object_aliases_without_generic_overlap(self):
+        parsed = app.parse_query("police car beside a trailer and bicycle rack")
+
+        self.assertIn("vehicle_emergency_police", parsed["objects"])
+        self.assertIn("trailer", parsed["objects"])
+        self.assertIn("static_object_bicycle_rack", parsed["objects"])
+        self.assertNotIn("car", parsed["objects"])
+        self.assertNotIn("bicycle", parsed["objects"])
+
+    def test_parse_query_matches_extended_chinese_object_aliases(self):
+        parsed = app.parse_query(
+            "\u6551\u62a4\u8f66\u65c1\u8fb9\u6709\u8b66\u8f66\u3001\u62d6\u8f66\u3001\u81ea\u884c\u8f66\u67b6\u548c\u52a8\u7269"
+        )
+
+        self.assertIn("vehicle_emergency_ambulance", parsed["objects"])
+        self.assertIn("vehicle_emergency_police", parsed["objects"])
+        self.assertIn("trailer", parsed["objects"])
+        self.assertIn("static_object_bicycle_rack", parsed["objects"])
+        self.assertIn("animal", parsed["objects"])
+        self.assertNotIn("car", parsed["objects"])
+        self.assertNotIn("bicycle", parsed["objects"])
+
+    def test_build_explanation_html_renders_top_runtime_bar_and_two_focus_cards(self):
+        parsed_query = {
+            "weather": "rainy",
+            "time": "night",
+            "objects": ["pedestrian"],
+            "location": "intersection",
+            "raw_text": "rainy night intersection with pedestrians",
+            "highlight_matches": [
+                {"start": 0, "end": 5, "text": "rainy", "category": "weather", "label": "rainy"},
+                {"start": 6, "end": 11, "text": "night", "category": "time", "label": "night"},
+                {"start": 12, "end": 24, "text": "intersection", "category": "location", "label": "intersection"},
+                {"start": 30, "end": 41, "text": "pedestrians", "category": "object", "label": "pedestrian"},
+            ],
+        }
         html = app.build_explanation_html(
-            {"weather": "rainy", "time": "night", "objects": ["pedestrian"], "location": "intersection"},
-            "Neo4j filtered 1 scene",
+            parsed_query,
+            "Neo4j filtered 1 scene | 耗时：NLP=12ms, 知识图谱=34ms, Milvus=56ms",
             "Chinese-CLIP",
             "text2image",
             3,
         )
 
-        self.assertIn("<details", html)
+        self.assertIn("query-highlight-block", html)
         self.assertIn("detail-panel", html)
-        self.assertIn("module-card", html)
-        self.assertIn("rainy", html)
+        self.assertIn("runtime-strip", html)
+        self.assertIn("runtime-total", html)
+        self.assertIn("runtime-breakdown", html)
+        self.assertIn("runtime-chip", html)
+        self.assertIn("focus-card-grid", html)
+        self.assertIn("focus-card nlp-focus-card", html)
+        self.assertIn("focus-card kg-focus-card", html)
+        self.assertIn("focus-card-body", html)
+        self.assertIn("module-inline-details", html)
+        self.assertIn("kg-path-block", html)
+        self.assertIn("path-segment path-segment-relation", html)
+        self.assertIn("Scene.scene_token", html)
+        self.assertIn("CONTAINS {count}", html)
+        self.assertIn("天气 / weather", html)
+        self.assertIn("vehicle_emergency_ambulance", html)
         self.assertIn("night", html)
         self.assertIn("pedestrian", html)
-        self.assertIn("Neo4j", html)
+        self.assertIn("intersection", html)
+        self.assertIn("检索时间", html)
+        self.assertIn("NLP=12ms", html)
+        self.assertIn("query-marker marker-weather", html)
+        self.assertNotIn("当前检索解析", html)
+        self.assertNotIn("自然语言解析模块", html)
+        self.assertNotIn("知识图谱过滤模块", html)
+        self.assertNotIn("kg-runtime-meta", html)
+        self.assertNotIn("path-summary-chip", html)
         self.assertNotIn("Chinese-CLIP", html)
+
+    def test_build_explanation_html_places_query_highlight_inside_nlp_focus_card(self):
+        parsed_query = {
+            "time": "night",
+            "location": "intersection",
+            "objects": ["car"],
+            "raw_text": "night intersection with cars",
+            "highlight_matches": [
+                {"start": 0, "end": 5, "text": "night", "category": "time", "label": "night"},
+                {"start": 6, "end": 18, "text": "intersection", "category": "location", "label": "intersection"},
+                {"start": 24, "end": 28, "text": "cars", "category": "object", "label": "car"},
+            ],
+        }
+
+        html = app.build_explanation_html(
+            parsed_query,
+            "Neo4j filtered 0 scenes",
+            "English-CLIP",
+            "text2image",
+            0,
+        )
+
+        highlight_index = html.index("query-highlight-block")
+        nlp_card_index = html.index("focus-card nlp-focus-card")
+
+        self.assertGreater(highlight_index, nlp_card_index)
+
+    def test_build_explanation_html_keeps_empty_nlp_and_kg_cards_balanced(self):
+        html = app.build_explanation_html({}, "尚未执行知识图谱过滤。", "待命", "text2image", 0)
+
+        self.assertIn("focus-card-body", html)
+        self.assertIn("query-highlight-empty", html)
+        self.assertIn("kg-path-empty", html)
+        self.assertIn("runtime-chip-muted", html)
 
     def test_build_image_caption_wraps_metadata_in_details(self):
         caption = app.build_image_caption(
@@ -112,7 +227,7 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertIn("English-CLIP", output[-2])
         self.assertIn("Neo4j filtered 1 scene", output[-2])
         self.assertIn("detail-panel", output[-1])
-        self.assertIn("module-card", output[-1])
+        self.assertIn("focus-card", output[-1])
         self.assertNotIn("Chinese-CLIP", output[-1])
 
     def test_custom_css_keeps_five_column_images_with_custom_preview_button(self):
@@ -122,6 +237,17 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertIn("body.lightbox-open", app.custom_css)
         self.assertIn("background: rgba(248, 250, 252", app.custom_css)
         self.assertIn("100dvh", app.custom_css)
+        self.assertIn(".query-marker", app.custom_css)
+        self.assertIn(".marker-time", app.custom_css)
+        self.assertIn(".query-highlight-chip", app.custom_css)
+        self.assertIn(".module-inline-details", app.custom_css)
+        self.assertIn(".kg-path-block", app.custom_css)
+        self.assertIn(".path-segment-relation", app.custom_css)
+        self.assertIn(".focus-card-grid", app.custom_css)
+        self.assertIn(".focus-card-body", app.custom_css)
+        self.assertIn(".runtime-strip", app.custom_css)
+        self.assertIn(".runtime-total", app.custom_css)
+        self.assertIn(".runtime-breakdown", app.custom_css)
         self.assertNotIn("max-height: 132px;", app.custom_css)
         self.assertNotIn("overflow: auto;", app.custom_css)
         source = Path(app.__file__).read_text(encoding="utf-8")
@@ -190,13 +316,14 @@ class AppInterfaceTests(unittest.TestCase):
         with patch.object(app, "query_scene_tokens", return_value=["scene-token"]), patch.object(
             app, "get_local_candidate_scene_tokens", return_value=["scene-a"]
         ):
-            tokens, status = app.get_candidate_scene_tokens(parsed_query)
+            tokens, status, should_stop = app.get_candidate_scene_tokens(parsed_query)
 
         self.assertEqual(tokens, ["scene-a"])
         self.assertIn("Neo4j", status)
         self.assertTrue(status)
+        self.assertFalse(should_stop)
 
-    def test_get_candidate_scene_tokens_falls_back_to_full_collection_when_no_valid_tokens_exist(self):
+    def test_get_candidate_scene_tokens_reports_zero_candidates_when_no_valid_tokens_exist(self):
         parsed_query = {
             "weather": "rainy",
             "time": "night",
@@ -207,11 +334,103 @@ class AppInterfaceTests(unittest.TestCase):
         with patch.object(app, "query_scene_tokens", return_value=["scene-token"]), patch.object(
             app, "get_local_candidate_scene_tokens", return_value=[]
         ):
-            tokens, status = app.get_candidate_scene_tokens(parsed_query)
+            tokens, status, should_stop = app.get_candidate_scene_tokens(parsed_query)
 
         self.assertEqual(tokens, [])
         self.assertIn("Neo4j", status)
         self.assertTrue(status)
+        self.assertTrue(should_stop)
+        self.assertNotIn("回退到全库搜索", status)
+
+    def test_get_candidate_scene_tokens_reports_no_night_scene_in_current_like_subset(self):
+        parsed_query = app.parse_query("夜间")
+        subset_records = [
+            {
+                "scene_token": f"scene-{index}",
+                "scene_name": f"scene-{index}",
+                "description": "day scene",
+                "num_samples": 1,
+                "weather": "clear",
+                "timeofday": "day",
+                "location_area": "boston-seaport",
+                "location_kind": "urban",
+                "location_key": f"boston-seaport|urban-{index}",
+                "objects": {},
+            }
+            for index in range(85)
+        ]
+
+        with patch.object(app, "KG_SCENE_RECORDS", subset_records), patch.object(
+            app, "query_scene_tokens", side_effect=RuntimeError("Neo4j unavailable")
+        ):
+            tokens, status, should_stop = app.get_candidate_scene_tokens(parsed_query)
+
+        self.assertEqual(parsed_query["time"], "night")
+        self.assertEqual(tokens, [])
+        self.assertTrue(should_stop)
+        self.assertIn("85-scene", status)
+        self.assertIn("night", status)
+        self.assertNotIn("回退到全库搜索", status)
+
+    def test_retrieve_images_skips_vector_search_when_structured_filters_have_no_candidates(self):
+        subset_records = [
+            {
+                "scene_token": f"scene-{index}",
+                "scene_name": f"scene-{index}",
+                "description": "day scene",
+                "num_samples": 1,
+                "weather": "clear",
+                "timeofday": "day",
+                "location_area": "boston-seaport",
+                "location_kind": "urban",
+                "location_key": f"boston-seaport|urban-{index}",
+                "objects": {},
+            }
+            for index in range(85)
+        ]
+
+        with patch.object(app, "KG_SCENE_RECORDS", subset_records), patch.object(
+            app, "query_scene_tokens", side_effect=RuntimeError("Neo4j unavailable")
+        ), patch.object(app, "encode_text_query") as encode_mock, patch.object(app, "search_frame_hits") as search_mock:
+            image_results, model_name, parsed_query, kg_status = app.retrieve_images("夜间")
+
+        self.assertEqual(parsed_query["time"], "night")
+        self.assertEqual(image_results, [])
+        self.assertEqual(model_name, app.KG_ZERO_CANDIDATE_MODEL_NAME)
+        self.assertIn("85-scene", kg_status)
+        self.assertIn("night", kg_status)
+        encode_mock.assert_not_called()
+        search_mock.assert_not_called()
+
+    def test_retrieve_videos_skips_vector_search_when_structured_filters_have_no_candidates(self):
+        subset_records = [
+            {
+                "scene_token": f"scene-{index}",
+                "scene_name": f"scene-{index}",
+                "description": "day scene",
+                "num_samples": 1,
+                "weather": "clear",
+                "timeofday": "day",
+                "location_area": "boston-seaport",
+                "location_kind": "urban",
+                "location_key": f"boston-seaport|urban-{index}",
+                "objects": {},
+            }
+            for index in range(85)
+        ]
+
+        with patch.object(app, "KG_SCENE_RECORDS", subset_records), patch.object(
+            app, "query_scene_tokens", side_effect=RuntimeError("Neo4j unavailable")
+        ), patch.object(app, "encode_text_query") as encode_mock, patch.object(app, "search_frame_hits") as search_mock:
+            video_results, model_name, parsed_query, kg_status = app.retrieve_videos("夜间")
+
+        self.assertEqual(parsed_query["time"], "night")
+        self.assertEqual(video_results, [])
+        self.assertEqual(model_name, app.KG_ZERO_CANDIDATE_MODEL_NAME)
+        self.assertIn("85-scene", kg_status)
+        self.assertIn("night", kg_status)
+        encode_mock.assert_not_called()
+        search_mock.assert_not_called()
 
     def test_search_frame_hits_falls_back_to_local_scene_filter_when_filtered_search_is_empty(self):
         fake_collection = _FakeCollection()
@@ -289,6 +508,91 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(render_mock.call_count, 1)
         shutil.rmtree(cache_dir, ignore_errors=True)
+
+    def test_build_query_highlight_html_renders_marker_markup(self):
+        parsed = app.parse_query("rainy intersection with cars at night")
+        html = app.build_query_highlight_html(parsed)
+
+        self.assertIn("query-highlight-block", html)
+        self.assertIn("query-marker marker-weather", html)
+        self.assertIn("query-marker marker-time", html)
+        self.assertIn("query-marker marker-location", html)
+        self.assertIn("query-marker marker-object", html)
+        self.assertIn("query-highlight-chip", html)
+        self.assertIn("rainy", html)
+        self.assertIn("cars", html)
+
+    def test_build_explanation_html_renders_top_runtime_bar_and_two_focus_cards(self):
+        parsed_query = {
+            "weather": "rainy",
+            "time": "night",
+            "objects": ["pedestrian"],
+            "location": "intersection",
+            "raw_text": "rainy night intersection with pedestrians",
+            "highlight_matches": [
+                {"start": 0, "end": 5, "text": "rainy", "category": "weather", "label": "rainy"},
+                {"start": 6, "end": 11, "text": "night", "category": "time", "label": "night"},
+                {"start": 12, "end": 24, "text": "intersection", "category": "location", "label": "intersection"},
+                {"start": 30, "end": 41, "text": "pedestrians", "category": "object", "label": "pedestrian"},
+            ],
+        }
+        html = app.build_explanation_html(
+            parsed_query,
+            "Neo4j filtered 1 scene | 耗时：NLP=12ms, 知识图谱=34ms, Milvus=56ms",
+            "Chinese-CLIP",
+            "text2image",
+            3,
+        )
+
+        self.assertIn("query-highlight-block", html)
+        self.assertIn("detail-panel", html)
+        self.assertIn("runtime-strip", html)
+        self.assertIn("runtime-total", html)
+        self.assertIn("runtime-breakdown", html)
+        self.assertIn("focus-card-grid", html)
+        self.assertIn("focus-card nlp-focus-card", html)
+        self.assertIn("focus-card kg-focus-card", html)
+        self.assertIn("focus-card-body", html)
+        self.assertIn("module-inline-details", html)
+        self.assertIn("kg-path-block", html)
+        self.assertIn("path-segment path-segment-relation", html)
+        self.assertIn("总耗时 0.10s", html)
+        self.assertIn("NLP 12ms", html)
+        self.assertIn("query-marker marker-weather", html)
+        self.assertNotIn("kg-runtime-meta", html)
+        self.assertNotIn("path-summary-chip", html)
+        self.assertNotIn("Chinese-CLIP", html)
+
+    def test_custom_css_keeps_five_column_images_with_custom_preview_button(self):
+        self.assertNotIn("button:hover, .gr-button:hover", app.custom_css)
+        self.assertIn("#search-btn:hover, #clear-btn:hover", app.custom_css)
+        self.assertIn("grid-template-columns: repeat(5, minmax(0, 1fr));", app.custom_css)
+        self.assertIn("body.lightbox-open", app.custom_css)
+        self.assertIn("background: rgba(248, 250, 252", app.custom_css)
+        self.assertIn("100dvh", app.custom_css)
+        self.assertIn(".query-marker", app.custom_css)
+        self.assertIn(".marker-time", app.custom_css)
+        self.assertIn(".query-highlight-chip", app.custom_css)
+        self.assertIn(".module-inline-details", app.custom_css)
+        self.assertIn(".kg-path-block", app.custom_css)
+        self.assertIn(".path-segment-relation", app.custom_css)
+        self.assertIn(".focus-card-grid", app.custom_css)
+        self.assertIn(".focus-card-body", app.custom_css)
+        self.assertIn(".runtime-strip", app.custom_css)
+        self.assertIn(".runtime-total", app.custom_css)
+        self.assertIn(".runtime-breakdown", app.custom_css)
+        self.assertNotIn("max-height: 132px;", app.custom_css)
+        self.assertNotIn("overflow: auto;", app.custom_css)
+        source = Path(app.__file__).read_text(encoding="utf-8")
+        self.assertIn("gr.Image(", source)
+        self.assertIn('gr.Button("放大查看"', source)
+        self.assertIn("def open_image_preview", source)
+        self.assertIn("document.body.classList.add('lightbox-open')", source)
+        self.assertIn("document.body.classList.remove('lightbox-open')", source)
+        self.assertNotIn("gr.Gallery(", source)
+        self.assertEqual(app.MODE_LABELS["text2image"], "搜索图片")
+        self.assertEqual(app.MODE_LABELS["text2video"], "搜索视频片段")
+        self.assertIn("show_fullscreen_button=False", source)
 
 
 if __name__ == "__main__":

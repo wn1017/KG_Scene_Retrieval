@@ -451,14 +451,38 @@ def sanitize_candidate_scene_tokens(scene_tokens: list[str] | None) -> list[str]
     return sanitized_tokens
 
 
-def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
+KG_ZERO_CANDIDATE_MODEL_NAME = "未执行向量检索"
+
+
+def build_zero_candidate_status(parsed_query: dict, prefix: str = "") -> str:
+    subset_scene_count = len(KG_SCENE_RECORDS)
+    weather = parsed_query.get("weather")
+    timeofday = parsed_query.get("time")
+    object_types = parsed_query.get("objects") or []
+    location_kind = parsed_query.get("location")
+
+    if timeofday and not any([weather, object_types, location_kind]):
+        core_message = f"当前 {subset_scene_count}-scene 子集没有 {timeofday} 场景，已直接返回 0 结果。"
+    else:
+        condition_summary = format_parsed_query(parsed_query)
+        if condition_summary and "未提取到结构化条件" not in condition_summary:
+            core_message = f"当前 {subset_scene_count}-scene 子集没有满足 {condition_summary} 的场景，已直接返回 0 结果。"
+        else:
+            core_message = f"当前 {subset_scene_count}-scene 子集没有满足条件的场景，已直接返回 0 结果。"
+
+    if prefix:
+        return f"{prefix}；{core_message}"
+    return core_message
+
+
+def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str, bool]:
     weather = parsed_query.get("weather")
     timeofday = parsed_query.get("time")
     object_types = parsed_query.get("objects") or []
     location_kind = parsed_query.get("location")
 
     if not any([weather, timeofday, object_types, location_kind]):
-        return [], "未提取到知识图谱过滤条件，已回退到全库搜索。"
+        return [], "未提取到知识图谱过滤条件，已回退到全库搜索。", False
 
     try:
         neo4j_tokens = sanitize_candidate_scene_tokens(
@@ -475,8 +499,8 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
                 ignored_count = len(neo4j_tokens) - len(valid_neo4j_tokens)
                 return valid_neo4j_tokens, (
                     f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景，并忽略了 {ignored_count} 个无效 token。"
-                )
-            return valid_neo4j_tokens, f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景。"
+                ), False
+            return valid_neo4j_tokens, f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景。", False
         if neo4j_tokens:
             local_tokens = get_local_candidate_scene_tokens(
                 weather=weather,
@@ -485,9 +509,18 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
                 location_kind=location_kind,
             )
             if local_tokens:
-                return local_tokens, f"Neo4j 返回了库外 token，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。"
-            return [], "Neo4j 返回了库外 scene token，已回退到全库搜索。"
-        return [], "Neo4j 未找到候选场景，已回退到全库搜索。"
+                return local_tokens, f"Neo4j 返回了库外 token，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。", False
+            return [], build_zero_candidate_status(parsed_query, "Neo4j 返回了库外 scene token"), True
+
+        local_tokens = get_local_candidate_scene_tokens(
+            weather=weather,
+            timeofday=timeofday,
+            object_types=object_types,
+            location_kind=location_kind,
+        )
+        if local_tokens:
+            return local_tokens, f"Neo4j 未找到候选场景，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。", False
+        return [], build_zero_candidate_status(parsed_query, "Neo4j 未找到候选场景"), True
     except RuntimeError:
         local_tokens = get_local_candidate_scene_tokens(
             weather=weather,
@@ -496,8 +529,8 @@ def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str]:
             location_kind=location_kind,
         )
         if local_tokens:
-                return local_tokens, f"Neo4j 不可用，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。"
-        return [], "Neo4j 不可用且本地知识图谱未找到候选场景，已回退到全库搜索。"
+                return local_tokens, f"Neo4j 不可用，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。", False
+        return [], build_zero_candidate_status(parsed_query, "Neo4j 不可用"), True
 
 
 def build_scene_filter_expr(scene_tokens: list[str]) -> str:
@@ -675,8 +708,11 @@ def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict
     timings["nlp"] = time.perf_counter() - stage_started_at
 
     stage_started_at = time.perf_counter()
-    candidate_scene_tokens, kg_status = get_candidate_scene_tokens(parsed_query)
+    candidate_scene_tokens, kg_status, should_stop = get_candidate_scene_tokens(parsed_query)
     timings["kg"] = time.perf_counter() - stage_started_at
+
+    if should_stop:
+        return [], KG_ZERO_CANDIDATE_MODEL_NAME, parsed_query, append_timing_breakdown(kg_status, timings)
 
     stage_started_at = time.perf_counter()
     query_vector, model_name = encode_text_query(text)
@@ -928,8 +964,11 @@ def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
     timings["nlp"] = time.perf_counter() - stage_started_at
 
     stage_started_at = time.perf_counter()
-    candidate_scene_tokens, kg_status = get_candidate_scene_tokens(parsed_query)
+    candidate_scene_tokens, kg_status, should_stop = get_candidate_scene_tokens(parsed_query)
     timings["kg"] = time.perf_counter() - stage_started_at
+
+    if should_stop:
+        return [], KG_ZERO_CANDIDATE_MODEL_NAME, parsed_query, append_timing_breakdown(kg_status, timings)
 
     stage_started_at = time.perf_counter()
     query_vector, model_name = encode_text_query(text)
@@ -1052,6 +1091,137 @@ def build_structured_condition_rows(parsed_query: dict | None) -> list[tuple[str
     return rows
 
 
+QUERY_HIGHLIGHT_META = {
+    "weather": {"label": "天气", "marker_class": "marker-weather", "chip_class": "chip-weather"},
+    "time": {"label": "时段", "marker_class": "marker-time", "chip_class": "chip-time"},
+    "location": {"label": "位置", "marker_class": "marker-location", "chip_class": "chip-location"},
+    "object": {"label": "对象", "marker_class": "marker-object", "chip_class": "chip-object"},
+}
+
+
+NLP_REFERENCE_ROWS = [
+    (
+        "天气 / weather",
+        "rainy: rain, rainy, wet, 雨, 雨天, 下雨, 雨夜; "
+        "sunny: sunny, clear, 晴, 晴天, 白天晴朗; "
+        "foggy: fog, foggy, 雾, 雾天",
+    ),
+    (
+        "时段 / time",
+        "night: night, nighttime, dark, 夜, 夜晚, 晚上, 夜间, 深夜; "
+        "dusk: dusk, twilight, sunset, 黄昏, 傍晚; "
+        "day: day, daytime, sunny, daylight, 白天, 白昼, 日间",
+    ),
+    (
+        "位置 / location",
+        "intersection, crosswalk, parking_lot, bus_stop, sidewalk, highway, street",
+    ),
+    (
+        "对象 / object",
+        "pedestrian, bicycle, static_object_bicycle_rack, vehicle_emergency_police, "
+        "vehicle_emergency_ambulance, car, bus, truck, motorcycle, construction_vehicle, "
+        "traffic_cone, barrier, trailer, animal, vehicle",
+    ),
+    (
+        "语言 / model",
+        "自动检测中文或英文查询，并在 chnclip / engclip 之间切换文本编码模型",
+    ),
+]
+
+KG_ENTITY_ROWS = [
+    (
+        "Scene",
+        "属性 Scene.scene_token / name / description / num_samples / weather / timeofday / "
+        "location_area / location_kind",
+    ),
+    ("Weather", "属性 Weather.name"),
+    ("TimeOfDay", "属性 TimeOfDay.name"),
+    ("Location", "属性 Location.key / name / kind / area"),
+    ("Object", "属性 Object.name"),
+]
+
+KG_RELATION_ROWS = [
+    ("WEATHER", "Scene -> Weather"),
+    ("TIMEOFDAY", "Scene -> TimeOfDay"),
+    ("LOCTYPE", "Scene -> Location"),
+    ("CONTAINS {count}", "Scene -> Object，关系属性 count 表示该场景中的对象实例计数"),
+    ("NEARBY {reason}", "Scene -> Scene，关系属性 reason 记录 same_area:<location_area>"),
+]
+
+
+def build_query_highlight_html(parsed_query: dict | None) -> str:
+    parsed_query = parsed_query or {}
+    raw_text = str(parsed_query.get("raw_text") or "")
+    matches = parsed_query.get("highlight_matches") or []
+    if not raw_text:
+        return ""
+
+    sorted_matches = sorted(
+        [
+            match
+            for match in matches
+            if isinstance(match, dict)
+            and isinstance(match.get("start"), int)
+            and isinstance(match.get("end"), int)
+            and match["start"] < match["end"]
+        ],
+        key=lambda item: (item["start"], item["end"]),
+    )
+
+    highlighted_parts: list[str] = []
+    cursor = 0
+    for match in sorted_matches:
+        start = max(0, min(len(raw_text), int(match["start"])))
+        end = max(start, min(len(raw_text), int(match["end"])))
+        if start < cursor:
+            continue
+        if cursor < start:
+            highlighted_parts.append(escape(raw_text[cursor:start]))
+        category = str(match.get("category") or "")
+        marker_class = QUERY_HIGHLIGHT_META.get(category, {}).get("marker_class", "marker-generic")
+        highlighted_parts.append(
+            f"<mark class='query-marker {marker_class}'>{escape(raw_text[start:end])}</mark>"
+        )
+        cursor = end
+
+    if cursor < len(raw_text):
+        highlighted_parts.append(escape(raw_text[cursor:]))
+
+    if not highlighted_parts:
+        highlighted_parts.append(escape(raw_text))
+
+    highlight_chips: list[str] = []
+    if parsed_query.get("weather"):
+        meta = QUERY_HIGHLIGHT_META["weather"]
+        highlight_chips.append(
+            f"<span class='query-highlight-chip {meta['chip_class']}'>{meta['label']} {escape(str(parsed_query['weather']))}</span>"
+        )
+    if parsed_query.get("time"):
+        meta = QUERY_HIGHLIGHT_META["time"]
+        highlight_chips.append(
+            f"<span class='query-highlight-chip {meta['chip_class']}'>{meta['label']} {escape(str(parsed_query['time']))}</span>"
+        )
+    if parsed_query.get("location"):
+        meta = QUERY_HIGHLIGHT_META["location"]
+        highlight_chips.append(
+            f"<span class='query-highlight-chip {meta['chip_class']}'>{meta['label']} {escape(str(parsed_query['location']))}</span>"
+        )
+    objects = parsed_query.get("objects") or []
+    if objects:
+        meta = QUERY_HIGHLIGHT_META["object"]
+        highlight_chips.append(
+            f"<span class='query-highlight-chip {meta['chip_class']}'>{meta['label']} {escape(' / '.join(str(item) for item in objects[:3]))}</span>"
+        )
+
+    return (
+        "<div class='query-highlight-block'>"
+        "<div class='query-highlight-label'>命中原词</div>"
+        f"<div class='query-highlight-text'>{''.join(highlighted_parts)}</div>"
+        f"<div class='query-highlight-legend'>{''.join(highlight_chips)}</div>"
+        "</div>"
+    )
+
+
 def build_kg_filter_rows(parsed_query: dict | None, kg_status: str) -> list[tuple[str, str]]:
     parsed_query = parsed_query or {}
     rows: list[tuple[str, str]] = [("执行路径", summarize_candidate_source(kg_status))]
@@ -1148,6 +1318,171 @@ def build_result_details_html(rows: list[tuple[str, str]]) -> str:
     )
 
 
+def split_status_and_timing(status: str) -> tuple[str, str]:
+    cleaned = (status or "").strip()
+    if not cleaned:
+        return "", ""
+
+    marker = "耗时："
+    if marker not in cleaned:
+        return cleaned, ""
+
+    core_status, timing_text = cleaned.split(marker, 1)
+    return core_status.rstrip(" |"), timing_text.strip()
+
+
+def parse_timing_metrics(status: str) -> list[tuple[str, float]]:
+    _, timing_text = split_status_and_timing(status)
+    if not timing_text:
+        return []
+
+    metrics: list[tuple[str, float]] = []
+    for item in timing_text.split(","):
+        cleaned_item = item.strip()
+        match = re.match(r"([^=]+)=\s*(\d+(?:\.\d+)?)ms$", cleaned_item)
+        if not match:
+            continue
+        label = match.group(1).strip()
+        value_ms = float(match.group(2))
+        metrics.append((label, value_ms))
+    return metrics
+
+
+def build_inline_reference_details(kind: str) -> str:
+    if kind == "nlp":
+        detail_title = "NLP 详情"
+        detail_class = "module-inline-details-nlp"
+        sections = [("全部可解析内容", NLP_REFERENCE_ROWS)]
+    else:
+        detail_title = "KG 详情"
+        detail_class = "module-inline-details-kg"
+        sections = [
+            ("KG 实体类型", KG_ENTITY_ROWS),
+            ("KG 关系类型", KG_RELATION_ROWS),
+        ]
+
+    section_html = "".join(
+        "<div class='module-section'>"
+        f"<div class='module-section-title'>{escape(section_title)}</div>"
+        f"{render_key_value_rows(rows, '暂无说明内容。')}"
+        "</div>"
+        for section_title, rows in sections
+    )
+
+    return (
+        f"<details class='module-inline-details {detail_class}'>"
+        f"<summary>{escape(detail_title)}</summary>"
+        f"<div class='module-inline-content'>{section_html}</div>"
+        "</details>"
+    )
+
+
+def build_kg_path_highlight_html(parsed_query: dict | None, kg_status: str) -> str:
+    parsed_query = parsed_query or {}
+    path_rows: list[tuple[str, list[tuple[str, str]]]] = []
+
+    if parsed_query.get("weather"):
+        path_rows.append(
+            (
+                "天气",
+                [
+                    ("entity", "Scene / Weather"),
+                    ("relation", "WEATHER"),
+                    ("property", "Scene.weather / Weather.name"),
+                    ("value", str(parsed_query["weather"])),
+                ],
+            )
+        )
+    if parsed_query.get("time"):
+        path_rows.append(
+            (
+                "时段",
+                [
+                    ("entity", "Scene / TimeOfDay"),
+                    ("relation", "TIMEOFDAY"),
+                    ("property", "Scene.timeofday / TimeOfDay.name"),
+                    ("value", str(parsed_query["time"])),
+                ],
+            )
+        )
+    if parsed_query.get("location"):
+        path_rows.append(
+            (
+                "位置",
+                [
+                    ("entity", "Scene / Location"),
+                    ("relation", "LOCTYPE"),
+                    ("property", "Scene.location_kind / Location.kind"),
+                    ("value", str(parsed_query["location"])),
+                ],
+            )
+        )
+
+    for object_name in parsed_query.get("objects") or []:
+        path_rows.append(
+            (
+                "对象",
+                [
+                    ("entity", "Scene / Object"),
+                    ("relation", "CONTAINS"),
+                    ("property", "Object.name"),
+                    ("value", str(object_name)),
+                ],
+            )
+        )
+
+    if not path_rows:
+        return (
+            "<div class='kg-path-block kg-path-empty'>"
+            "<div class='kg-path-label'>当前图谱映射</div>"
+            "<div class='detail-empty'>提交检索后展示当前查询映射到的实体、关系、属性和值。</div>"
+            "</div>"
+        )
+
+    path_rows_html = "".join(
+        "<div class='kg-path-row'>"
+        f"<div class='kg-path-row-label'>{escape(label)}</div>"
+        "<div class='kg-path-chain'>"
+        + "".join(
+            (
+                f"<span class='path-segment path-segment-{segment_kind}'>{escape(segment_text)}</span>"
+                if index == 0
+                else f"<span class='path-arrow'>→</span><span class='path-segment path-segment-{segment_kind}'>{escape(segment_text)}</span>"
+            )
+            for index, (segment_kind, segment_text) in enumerate(segments)
+        )
+        + "</div></div>"
+        for label, segments in path_rows
+    )
+
+    return (
+        "<div class='kg-path-block'>"
+        "<div class='kg-path-head'>"
+        "<div class='kg-path-label'>当前图谱映射</div>"
+        "</div>"
+        f"<div class='kg-path-list'>{path_rows_html}</div>"
+        "</div>"
+    )
+
+
+def build_timing_strip_html(kg_status: str) -> str:
+    _, timing_text = split_status_and_timing(kg_status)
+    chips = [item.strip() for item in timing_text.split(",") if item.strip()] if timing_text else []
+    if not chips:
+        chips = ["提交检索后展示阶段耗时"]
+
+    chip_html = "".join(
+        f"<span class='runtime-chip{' runtime-chip-muted' if item == '提交检索后展示阶段耗时' else ''}'>{escape(item)}</span>"
+        for item in chips
+    )
+    return (
+        "<div class='runtime-strip'>"
+        "<div class='runtime-label'>检索时间</div>"
+        f"<div class='runtime-chip-wrap'>{chip_html}</div>"
+        "</div>"
+    )
+
+
 def build_explanation_html(
     parsed_query: dict | None,
     kg_status: str,
@@ -1155,24 +1490,194 @@ def build_explanation_html(
     mode: str,
     result_count: int,
 ) -> str:
-    nlp_rows = build_structured_condition_rows(parsed_query)
-    kg_rows = build_kg_filter_rows(parsed_query, kg_status)
+    core_status, _ = split_status_and_timing(kg_status)
+    runtime_html = build_timing_strip_html(kg_status)
+    query_highlight_html = build_query_highlight_html(parsed_query) or (
+        "<div class='query-highlight-block query-highlight-empty'>"
+        "<div class='query-highlight-label'>当前 NLP 解析</div>"
+        "<div class='detail-empty'>提交检索后展示命中原词与解析标签。</div>"
+        "</div>"
+    )
+    kg_path_highlight_html = build_kg_path_highlight_html(parsed_query, core_status)
+    nlp_reference_html = build_inline_reference_details("nlp")
+    kg_reference_html = build_inline_reference_details("kg")
     return (
-        "<details class='detail-panel explain-shell'>"
-        "<summary>"
-        "<span class='detail-summary-title'>解析与图谱详情</span>"
-        "<span class='detail-summary-meta'>查看详情</span>"
-        "</summary>"
-        "<div class='detail-stack'>"
-        "<div class='module-card'>"
-        "<div class='module-title'>自然语言解析模块</div>"
-        f"{render_key_value_rows(nlp_rows, '尚未抽取到结构化条件。')}"
+        "<section class='detail-panel explain-shell compact-explain-shell'>"
+        f"{runtime_html}"
+        "<div class='focus-card-grid'>"
+        "<div class='focus-card nlp-focus-card'>"
+        "<div class='focus-card-head'>"
+        "<div class='focus-card-title'>当前 NLP 解析</div>"
+        f"{nlp_reference_html}"
         "</div>"
-        "<div class='module-card'>"
-        "<div class='module-title'>知识图谱过滤模块</div>"
-        f"{render_key_value_rows(kg_rows, '提交检索后展示图谱过滤信息。')}"
+        f"{query_highlight_html}"
         "</div>"
-        "</div></details>"
+        "<div class='focus-card kg-focus-card'>"
+        "<div class='focus-card-head'>"
+        "<div class='focus-card-title'>当前 KG 映射</div>"
+        f"{kg_reference_html}"
+        "</div>"
+        f"{kg_path_highlight_html}"
+        "</div>"
+        "</div>"
+        "</section>"
+    )
+
+
+def build_kg_path_highlight_html(parsed_query: dict | None, kg_status: str) -> str:
+    parsed_query = parsed_query or {}
+    path_rows: list[tuple[str, list[tuple[str, str]]]] = []
+
+    if parsed_query.get("weather"):
+        path_rows.append(
+            (
+                "天气",
+                [
+                    ("entity", "Scene / Weather"),
+                    ("relation", "WEATHER"),
+                    ("property", "Scene.weather / Weather.name"),
+                    ("value", str(parsed_query["weather"])),
+                ],
+            )
+        )
+    if parsed_query.get("time"):
+        path_rows.append(
+            (
+                "时段",
+                [
+                    ("entity", "Scene / TimeOfDay"),
+                    ("relation", "TIMEOFDAY"),
+                    ("property", "Scene.timeofday / TimeOfDay.name"),
+                    ("value", str(parsed_query["time"])),
+                ],
+            )
+        )
+    if parsed_query.get("location"):
+        path_rows.append(
+            (
+                "位置",
+                [
+                    ("entity", "Scene / Location"),
+                    ("relation", "LOCTYPE"),
+                    ("property", "Scene.location_kind / Location.kind"),
+                    ("value", str(parsed_query["location"])),
+                ],
+            )
+        )
+
+    for object_name in parsed_query.get("objects") or []:
+        path_rows.append(
+            (
+                "对象",
+                [
+                    ("entity", "Scene / Object"),
+                    ("relation", "CONTAINS"),
+                    ("property", "Object.name"),
+                    ("value", str(object_name)),
+                ],
+            )
+        )
+
+    if not path_rows:
+        return (
+            "<div class='kg-path-block kg-path-empty'>"
+            "<div class='kg-path-label'>当前图谱映射</div>"
+            "<div class='detail-empty'>提交搜索后展示当前查询映射到的实体、关系、属性和值。</div>"
+            "</div>"
+        )
+
+    path_rows_html = "".join(
+        "<div class='kg-path-row'>"
+        f"<div class='kg-path-row-label'>{escape(label)}</div>"
+        "<div class='kg-path-chain'>"
+        + "".join(
+            (
+                f"<span class='path-segment path-segment-{segment_kind}'>{escape(segment_text)}</span>"
+                if index == 0
+                else f"<span class='path-arrow'>→</span><span class='path-segment path-segment-{segment_kind}'>{escape(segment_text)}</span>"
+            )
+            for index, (segment_kind, segment_text) in enumerate(segments)
+        )
+        + "</div></div>"
+        for label, segments in path_rows
+    )
+
+    return (
+        "<div class='kg-path-block'>"
+        "<div class='kg-path-head'>"
+        "<div class='kg-path-label'>当前图谱映射</div>"
+        "</div>"
+        f"<div class='kg-path-list'>{path_rows_html}</div>"
+        "</div>"
+    )
+
+
+def build_timing_strip_html(kg_status: str) -> str:
+    metrics = parse_timing_metrics(kg_status)
+    if not metrics:
+        total_html = "<div class='runtime-total runtime-total-muted'>等待检索提交</div>"
+        breakdown_html = "<span class='runtime-chip runtime-chip-muted'>提交搜索后显示阶段耗时</span>"
+    else:
+        total_ms = sum(value_ms for _, value_ms in metrics)
+        total_html = f"<div class='runtime-total'>总耗时 {total_ms / 1000:.2f}s</div>"
+        breakdown_html = "".join(
+            f"<span class='runtime-chip'>{escape(label)} {value_ms:g}ms</span>"
+            for label, value_ms in metrics
+        )
+
+    return (
+        "<div class='runtime-strip'>"
+        "<div class='runtime-summary'>"
+        "<div class='runtime-label'>检索时间</div>"
+        f"{total_html}"
+        "</div>"
+        f"<div class='runtime-breakdown'>{breakdown_html}</div>"
+        "</div>"
+    )
+
+
+def build_explanation_html(
+    parsed_query: dict | None,
+    kg_status: str,
+    model_name: str,
+    mode: str,
+    result_count: int,
+) -> str:
+    core_status, _ = split_status_and_timing(kg_status)
+    runtime_html = build_timing_strip_html(kg_status)
+    query_highlight_html = build_query_highlight_html(parsed_query) or (
+        "<div class='query-highlight-block query-highlight-empty'>"
+        "<div class='query-highlight-label'>当前 NLP 解析</div>"
+        "<div class='detail-empty'>提交搜索后展示命中原词与解析标签。</div>"
+        "</div>"
+    )
+    kg_path_highlight_html = build_kg_path_highlight_html(parsed_query, core_status)
+    nlp_reference_html = build_inline_reference_details("nlp")
+    kg_reference_html = build_inline_reference_details("kg")
+    return (
+        "<section class='detail-panel explain-shell compact-explain-shell'>"
+        f"{runtime_html}"
+        "<div class='focus-card-grid'>"
+        "<div class='focus-card nlp-focus-card'>"
+        "<div class='focus-card-head'>"
+        "<div class='focus-card-title'>当前 NLP 解析</div>"
+        f"{nlp_reference_html}"
+        "</div>"
+        "<div class='focus-card-body'>"
+        f"{query_highlight_html}"
+        "</div>"
+        "</div>"
+        "<div class='focus-card kg-focus-card'>"
+        "<div class='focus-card-head'>"
+        "<div class='focus-card-title'>当前 KG 映射</div>"
+        f"{kg_reference_html}"
+        "</div>"
+        "<div class='focus-card-body'>"
+        f"{kg_path_highlight_html}"
+        "</div>"
+        "</div>"
+        "</div>"
+        "</section>"
     )
 
 
@@ -1373,7 +1878,6 @@ body.lightbox-open {
     font-weight: 700;
 }
 .status-content,
-.detail-stack,
 .result-detail-list {
     margin-top: 14px;
     padding-top: 14px;
@@ -1381,24 +1885,231 @@ body.lightbox-open {
 }
 .status-body { color: var(--muted); font-size:.98rem; line-height:1.7; }
 .status-note { margin-top: 10px; color: var(--muted); font-size:.92rem; line-height:1.7; }
-.detail-stack {
+.compact-explain-shell {
+    padding: 14px 16px !important;
+}
+.runtime-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    background: rgba(244,247,255,0.92);
+    border: 1px solid rgba(26,115,232,0.08);
+}
+.runtime-label {
+    color: var(--muted);
+    font-size: .8rem;
+    font-weight: 800;
+    letter-spacing: .05em;
+    min-width: 68px;
+}
+.runtime-chip-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+.runtime-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.96);
+    border: 1px solid rgba(26,115,232,0.10);
+    color: var(--blue-deep);
+    font-size: .78rem;
+    font-weight: 700;
+}
+.runtime-chip-muted {
+    background: rgba(245,247,250,0.96);
+    color: var(--muted);
+    border-color: rgba(32,33,36,0.08);
+}
+.focus-card-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
 }
-.module-card {
+.focus-card {
     padding: 14px;
     border-radius: 18px;
     background: rgba(255,255,255,0.92);
     border: 1px solid rgba(32,33,36,0.06);
     box-shadow: var(--shadow-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
-.module-title {
-    margin-bottom: 10px;
+.focus-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+.focus-card-title {
     font-size: .94rem;
     font-weight: 800;
     color: var(--text);
 }
+.nlp-focus-card .query-highlight-block,
+.kg-focus-card .kg-path-block {
+    margin-bottom: 0;
+}
+.query-highlight-empty {
+    min-height: 120px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+.module-inline-details {
+    min-width: fit-content;
+}
+.module-inline-details summary {
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(232,240,254,0.78);
+    border: 1px solid rgba(26,115,232,0.12);
+    color: var(--blue-deep);
+    font-size: .78rem;
+    font-weight: 700;
+}
+.module-inline-details[open] summary {
+    background: rgba(26,115,232,0.12);
+}
+.module-inline-content {
+    margin-top: 10px;
+    padding: 12px;
+    border-radius: 14px;
+    background: rgba(248,250,255,0.92);
+    border: 1px solid rgba(32,33,36,0.06);
+}
+.module-section + .module-section {
+    margin-top: 12px;
+}
+.module-section-title {
+    margin-bottom: 8px;
+    color: var(--muted);
+    font-size: .8rem;
+    font-weight: 800;
+    letter-spacing: .04em;
+}
+.query-highlight-block {
+    margin-bottom: 12px;
+    padding: 14px 14px 12px;
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(245,247,255,0.96) 0%, rgba(255,255,255,0.92) 100%);
+    border: 1px solid rgba(32,33,36,0.06);
+}
+.query-highlight-label {
+    margin-bottom: 10px;
+    color: var(--muted);
+    font-size: .8rem;
+    font-weight: 800;
+    letter-spacing: .06em;
+}
+.query-highlight-text {
+    color: var(--text);
+    font-size: .98rem;
+    line-height: 2.05;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.query-marker {
+    padding: 0 .18em .04em;
+    border-radius: .45em;
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+    background: linear-gradient(180deg, transparent 14%, var(--marker-color) 14%, var(--marker-color) 92%, transparent 92%);
+}
+.marker-weather { --marker-color: rgba(104, 178, 255, 0.6); }
+.marker-time { --marker-color: rgba(255, 224, 102, 0.78); }
+.marker-location { --marker-color: rgba(141, 234, 176, 0.62); }
+.marker-object { --marker-color: rgba(255, 166, 128, 0.68); }
+.marker-generic { --marker-color: rgba(191, 219, 254, 0.7); }
+.query-highlight-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+.query-highlight-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: .78rem;
+    font-weight: 700;
+    color: var(--text);
+    border: 1px solid rgba(32,33,36,0.08);
+}
+.chip-weather { background: rgba(104, 178, 255, 0.18); }
+.chip-time { background: rgba(255, 224, 102, 0.22); }
+.chip-location { background: rgba(141, 234, 176, 0.2); }
+.chip-object { background: rgba(255, 166, 128, 0.22); }
+.kg-path-block {
+    margin-bottom: 12px;
+    padding: 12px;
+    border-radius: 16px;
+    background: linear-gradient(180deg, rgba(249,250,255,0.96) 0%, rgba(255,255,255,0.94) 100%);
+    border: 1px solid rgba(32,33,36,0.06);
+}
+.kg-path-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.kg-path-label {
+    color: var(--muted);
+    font-size: .8rem;
+    font-weight: 800;
+    letter-spacing: .05em;
+}
+.kg-path-list {
+    display: grid;
+    gap: 10px;
+}
+.kg-path-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+}
+.kg-path-row-label {
+    color: #6b7280;
+    font-size: .8rem;
+    font-weight: 700;
+}
+.kg-path-chain {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+.path-arrow {
+    color: #94a3b8;
+    font-size: .78rem;
+    font-weight: 700;
+}
+.path-segment {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(32,33,36,0.06);
+    font-size: .78rem;
+    font-weight: 700;
+    color: var(--text);
+}
+.path-segment-entity { background: rgba(232,240,254,0.86); color: #174ea6; }
+.path-segment-relation { background: rgba(255,244,214,0.92); color: #8d5200; }
+.path-segment-property { background: rgba(231,247,237,0.92); color: #1f6f43; }
+.path-segment-value { background: rgba(255,235,227,0.96); color: #9f3f22; }
 .detail-list { display: grid; gap: 10px; }
 .detail-row,
 .result-detail-row {
@@ -1596,7 +2307,7 @@ body.lightbox-open {
 @media (max-width: 1120px) {
     #image-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     #video-grid,
-    .detail-stack { grid-template-columns: 1fr 1fr; }
+    .focus-card-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 780px) {
     .hero-card, .search-card, .results-shell { padding: 18px; }
@@ -1607,9 +2318,13 @@ body.lightbox-open {
     #image-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     #video-grid,
     .stats-grid,
-    .detail-stack { grid-template-columns: 1fr; }
+    .focus-card-grid { grid-template-columns: 1fr; }
     .detail-row,
     .result-detail-row { grid-template-columns: 1fr; gap: 4px; }
+    .kg-path-row { grid-template-columns: 1fr; gap: 4px; }
+    .focus-card-head { flex-direction: column; align-items: flex-start; }
+    .runtime-strip { flex-direction: column; align-items: flex-start; }
+    .runtime-chip-wrap { justify-content: flex-start; }
 }
 @media (max-width: 640px) {
     .gradio-container, .gradio-container-5-44-1 { padding: 14px 12px 24px !important; }
@@ -1618,6 +2333,64 @@ body.lightbox-open {
     #image-lightbox { padding: 12px !important; }
     .image-lightbox-card { width: 100%; }
     .lightbox-close { top: 16px !important; right: 16px !important; }
+}
+.runtime-strip {
+    align-items: flex-start;
+    padding: 12px 14px;
+}
+.runtime-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 116px;
+}
+.runtime-total {
+    color: var(--blue-deep);
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+}
+.runtime-total-muted {
+    color: rgba(95,99,104,0.82);
+}
+.runtime-breakdown {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+    align-items: center;
+}
+.runtime-chip {
+    padding: 4px 9px;
+    font-size: .72rem;
+    font-weight: 600;
+    color: rgba(23,78,166,0.68);
+    background: rgba(255,255,255,0.78);
+    border-color: rgba(26,115,232,0.08);
+}
+.runtime-chip-muted {
+    color: rgba(95,99,104,0.72);
+    background: rgba(245,247,250,0.9);
+}
+.focus-card-body {
+    display: flex;
+    flex: 1 1 auto;
+}
+.focus-card-body > .query-highlight-block,
+.focus-card-body > .kg-path-block {
+    flex: 1 1 auto;
+    min-height: 156px;
+    margin-bottom: 0;
+}
+.query-highlight-empty,
+.kg-path-empty {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+@media (max-width: 780px) {
+    .runtime-breakdown { justify-content: flex-start; }
 }
 """
 

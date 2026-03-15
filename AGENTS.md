@@ -18,6 +18,8 @@
 14. Custom image preview overlays must lock page scrolling, keep a clearly visible close control pinned in view, and use a light overlay style that matches the page theme unless the user asks otherwise.
 15. Image preview metadata areas should expand naturally and avoid nested scrollbars unless the user explicitly asks for an internal scrolling region.
 16. When the user explicitly allows read-only reuse of resources from the original project directory, treat that access as permitted without assuming the original project can be modified.
+17. When identifying a nuScenes trainval part number, verify it from the local scene-token range or file-backed subset records instead of relying on prior assumptions or labels remembered from earlier runs.
+18. Before reporting branch state or performing commit/merge work in a git worktree setup, verify the active worktree path and current branch instead of assuming the original project directory matches the current thread workspace.
 
 ## Python Environment
 
