@@ -1751,7 +1751,7 @@ body.lightbox-open {
     margin: 0 auto !important;
     gap: 14px;
 }
-.topbar, .hero-card, .search-card, .results-shell, #status-panel, #query-detail-panel {
+.topbar, .hero-card, .search-card, .results-shell, #query-detail-panel {
     background: var(--surface);
     border: 1px solid var(--line);
     box-shadow: var(--shadow);
@@ -1841,7 +1841,7 @@ body.lightbox-open {
     box-shadow: 0 12px 26px rgba(26,115,232,0.22);
 }
 #clear-btn { min-width:104px; background:#fff !important; color: var(--text) !important; border:1px solid var(--line) !important; }
-#status-panel, #query-detail-panel { border-radius: 26px; padding: 4px; }
+#query-detail-panel { border-radius: 26px; padding: 4px; }
 .status-card, .detail-panel {
     border-radius: 22px;
     padding: 18px 20px;
@@ -2485,7 +2485,6 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                 with gr.Column(scale=1, min_width=110):
                     clear_btn = gr.Button("清空", variant="secondary", elem_id="clear-btn")
             query_detail_panel = gr.HTML(value=INITIAL_EXPLANATION_HTML, elem_id="query-detail-panel")
-        status_panel = gr.HTML(value=INITIAL_STATUS_HTML, elem_id="status-panel")
         with gr.Column(elem_classes="results-shell"):
             gr.HTML(
                 """
@@ -2561,7 +2560,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
     def update_progress(text: str, mode: str):
         query = text.strip()
         if not query:
-            return [INITIAL_STATUS_HTML, build_preview_explanation("", mode)]
+            return build_preview_explanation("", mode)
         return [
             status_card(
                 "正在准备检索",
@@ -2676,15 +2675,59 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                 explanation=build_preview_explanation(query, mode),
             )
 
+    def update_progress(text: str, mode: str):
+        query = text.strip()
+        if not query:
+            return build_preview_explanation("", mode)
+        return build_preview_explanation(query, mode)
+
+    def build_output_values(
+        image_results: list[tuple[Image.Image, str]] | None = None,
+        video_results: list[tuple[str, str]] | None = None,
+        explanation: str = INITIAL_EXPLANATION_HTML,
+    ) -> list:
+        image_results = image_results or []
+        video_results = video_results or []
+        values: list = []
+        for index in range(IMAGE_RESULT_COUNT):
+            values.append(image_results[index][0] if index < len(image_results) else None)
+        for index in range(IMAGE_RESULT_COUNT):
+            values.append(image_results[index][1] if index < len(image_results) else "")
+        for index in range(VIDEO_RESULT_COUNT):
+            values.append(video_results[index][0] if index < len(video_results) else None)
+        for index in range(VIDEO_RESULT_COUNT):
+            values.append(video_results[index][1] if index < len(video_results) else "")
+        values.append(None)
+        values.append("")
+        values.append(gr.update(visible=False))
+        values.append(explanation)
+        return values
+
+    def dynamic_retrieve(text: str, mode: str):
+        query = text.strip()
+        if not query:
+            return build_output_values(explanation=build_preview_explanation("", mode))
+        try:
+            if mode == "text2image":
+                image_results, model_name, parsed_query, kg_status = retrieve_images(query)
+                explanation = build_explanation_html(parsed_query, kg_status, model_name, mode, len(image_results))
+                return build_output_values(image_results=image_results, explanation=explanation)
+
+            video_results, model_name, parsed_query, kg_status = retrieve_videos(query)
+            explanation = build_explanation_html(parsed_query, kg_status, model_name, mode, len(video_results))
+            return build_output_values(video_results=video_results, explanation=explanation)
+        except Exception:
+            return build_output_values(explanation=build_preview_explanation(query, mode))
+
     def clear_all():
-        return [""] + build_output_values(status=INITIAL_STATUS_HTML, explanation=INITIAL_EXPLANATION_HTML)
+        return [""] + build_output_values(explanation=INITIAL_EXPLANATION_HTML)
 
     mode_select.change(
         fn=switch_result_zone,
         inputs=[mode_select, text_input],
         outputs=[image_result_zone, video_result_zone, query_detail_panel],
     )
-    text_input.change(fn=update_progress, inputs=[text_input, mode_select], outputs=[status_panel, query_detail_panel])
+    text_input.change(fn=update_progress, inputs=[text_input, mode_select], outputs=[query_detail_panel])
     submit_btn.click(
         fn=dynamic_retrieve,
         inputs=[text_input, mode_select],
@@ -2693,7 +2736,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         + video_outputs
         + video_caption_outputs
         + image_preview_outputs
-        + [status_panel, query_detail_panel],
+        + [query_detail_panel],
     )
     text_input.submit(
         fn=dynamic_retrieve,
@@ -2703,7 +2746,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         + video_outputs
         + video_caption_outputs
         + image_preview_outputs
-        + [status_panel, query_detail_panel],
+        + [query_detail_panel],
     )
     clear_btn.click(
         fn=clear_all,
@@ -2713,7 +2756,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         + video_outputs
         + video_caption_outputs
         + image_preview_outputs
-        + [status_panel, query_detail_panel],
+        + [query_detail_panel],
         js=CLOSE_IMAGE_PREVIEW_JS,
     )
     for preview_button, image_component, image_caption in zip(image_preview_buttons, image_outputs, image_caption_outputs):

@@ -215,19 +215,17 @@ class AppInterfaceTests(unittest.TestCase):
         with patch.object(app, "retrieve_images", return_value=fake_result):
             output = app.dynamic_retrieve("rainy night with pedestrians", "text2image")
 
-        expected_output_count = app.IMAGE_RESULT_COUNT * 2 + app.VIDEO_RESULT_COUNT * 2 + 5
+        expected_output_count = app.IMAGE_RESULT_COUNT * 2 + app.VIDEO_RESULT_COUNT * 2 + 4
         self.assertEqual(len(output), expected_output_count)
         self.assertIsNotNone(output[0])
         self.assertEqual(output[app.IMAGE_RESULT_COUNT], "caption")
-        self.assertIsNone(output[-5])
-        self.assertEqual(output[-4], "")
-        self.assertIsInstance(output[-3], dict)
-        self.assertFalse(output[-3]["visible"])
-        self.assertIn("status-card success", output[-2])
-        self.assertIn("English-CLIP", output[-2])
-        self.assertIn("Neo4j filtered 1 scene", output[-2])
+        self.assertIsNone(output[-4])
+        self.assertEqual(output[-3], "")
+        self.assertIsInstance(output[-2], dict)
+        self.assertFalse(output[-2]["visible"])
         self.assertIn("detail-panel", output[-1])
         self.assertIn("focus-card", output[-1])
+        self.assertNotIn("status-card", output[-1])
         self.assertNotIn("Chinese-CLIP", output[-1])
 
     def test_custom_css_keeps_five_column_images_with_custom_preview_button(self):
@@ -589,6 +587,7 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertIn("def open_image_preview", source)
         self.assertIn("document.body.classList.add('lightbox-open')", source)
         self.assertIn("document.body.classList.remove('lightbox-open')", source)
+        self.assertNotIn("status_panel = gr.HTML", source)
         self.assertNotIn("gr.Gallery(", source)
         self.assertEqual(app.MODE_LABELS["text2image"], "搜索图片")
         self.assertEqual(app.MODE_LABELS["text2video"], "搜索视频片段")
