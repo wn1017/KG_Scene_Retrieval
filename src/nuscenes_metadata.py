@@ -6,7 +6,13 @@ from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
-from config import NUSCENES_META_DIR, NUSCENES_ROOT, NUSCENES_SAMPLES_DIR, NUSCENES_SWEEPS_DIR
+from config import (
+    NUSCENES_BLOB_ROOTS,
+    NUSCENES_META_DIR,
+    NUSCENES_ROOT,
+    NUSCENES_SAMPLES_DIR,
+    NUSCENES_SWEEPS_DIR,
+)
 from src.kg_builder import infer_location_kind, infer_time_of_day, infer_weather, normalize_object_name
 
 
@@ -95,6 +101,13 @@ def infer_camera_from_path(path_value: str | Path | None) -> str:
     return ""
 
 
+def get_blob_roots() -> list[Path]:
+    roots = [Path(root) for root in NUSCENES_BLOB_ROOTS]
+    if not roots:
+        roots = [NUSCENES_ROOT]
+    return roots
+
+
 def resolve_frame_path(raw_path: str | Path | None, metadata_index: dict[str, object] | None = None) -> Path | None:
     if raw_path is None:
         return None
@@ -105,25 +118,30 @@ def resolve_frame_path(raw_path: str | Path | None, metadata_index: dict[str, ob
         return None
 
     candidates: list[Path] = [Path(normalized), Path.cwd() / normalized]
+    blob_roots = get_blob_roots()
     parts = PurePosixPath(normalized).parts
     if parts:
         if parts[0] in {"samples", "sweeps"}:
-            candidates.append(NUSCENES_ROOT.joinpath(*parts))
+            for blob_root in blob_roots:
+                candidates.append(blob_root.joinpath(*parts))
         elif parts[0] == "img_data" and len(parts) >= 3:
             camera = parts[1]
             filename = parts[-1]
-            candidates.append(NUSCENES_SAMPLES_DIR / camera / filename)
-            candidates.append(NUSCENES_SWEEPS_DIR / camera / filename)
+            for blob_root in blob_roots:
+                candidates.append(blob_root / "samples" / camera / filename)
+                candidates.append(blob_root / "sweeps" / camera / filename)
         elif parts[0].startswith("CAM_"):
             camera = parts[0]
             filename = parts[-1]
-            candidates.append(NUSCENES_SAMPLES_DIR / camera / filename)
-            candidates.append(NUSCENES_SWEEPS_DIR / camera / filename)
+            for blob_root in blob_roots:
+                candidates.append(blob_root / "samples" / camera / filename)
+                candidates.append(blob_root / "sweeps" / camera / filename)
 
     basename = PurePosixPath(normalized).name
     sample_data = metadata_index["basename_to_sample_data"].get(basename)
     if sample_data:
-        candidates.append(NUSCENES_ROOT / sample_data["filename"])
+        for blob_root in blob_roots:
+            candidates.append(blob_root / sample_data["filename"])
 
     seen: set[str] = set()
     for candidate in candidates:
@@ -151,10 +169,11 @@ def lookup_sample_data(
 
     if resolved_path:
         candidate_keys.append(resolved_path.name)
-        try:
-            candidate_keys.append(normalize_path_key(resolved_path.relative_to(NUSCENES_ROOT)))
-        except ValueError:
-            pass
+        for blob_root in get_blob_roots():
+            try:
+                candidate_keys.append(normalize_path_key(resolved_path.relative_to(blob_root)))
+            except ValueError:
+                continue
 
     for key in candidate_keys:
         sample_data = metadata_index["filename_to_sample_data"].get(key)
@@ -225,9 +244,13 @@ def get_image_metadata(raw_path: str | Path, metadata_index: dict[str, object] |
         obj_types = ",".join(collect_sample_object_types(sample_token, metadata_index))
 
     if resolved_path and not frame_path:
-        try:
-            frame_path = normalize_path_key(resolved_path.relative_to(NUSCENES_ROOT))
-        except ValueError:
+        for blob_root in get_blob_roots():
+            try:
+                frame_path = normalize_path_key(resolved_path.relative_to(blob_root))
+                break
+            except ValueError:
+                continue
+        else:
             frame_path = normalize_path_key(resolved_path)
 
     return {

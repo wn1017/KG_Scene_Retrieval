@@ -21,6 +21,8 @@
 17. When identifying a nuScenes trainval part number, verify it from the local scene-token range or file-backed subset records instead of relying on prior assumptions or labels remembered from earlier runs.
 18. Before reporting branch state or performing commit/merge work in a git worktree setup, verify the active worktree path and current branch instead of assuming the original project directory matches the current thread workspace.
 19. When describing merge work across multiple git worktrees, distinguish clearly between updating a feature branch from main and delivering the feature branch back into main; do not describe those as the same step.
+20. When reporting that a UI status or hint is visible, confirm the rendered user-facing panel contains the text rather than inferring visibility from backend return values alone.
+21. When the user wants retrieval fallback messaging near the results list, place it in the results header area rather than inside the KG mapping card.
 
 ## Python Environment
 

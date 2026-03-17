@@ -122,7 +122,7 @@ def run_pure_clip(query_text: str, frame_search_limit: int, map_depth: int) -> R
 def run_kg_clip(query_text: str, frame_search_limit: int, map_depth: int) -> RetrievalRun:
     started_at = time.perf_counter()
     parsed_query = app.parse_query(query_text)
-    candidate_scene_tokens, kg_status = app.get_candidate_scene_tokens(parsed_query)
+    candidate_scene_tokens, kg_status, _should_stop = app.get_candidate_scene_tokens(parsed_query)
     query_vector, model_name = app.encode_text_query(query_text)
 
     hits = app.search_frame_hits(query_vector, frame_search_limit, candidate_scene_tokens)

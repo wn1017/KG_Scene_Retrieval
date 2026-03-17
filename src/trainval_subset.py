@@ -4,6 +4,7 @@ import csv
 import json
 import os
 from pathlib import Path
+from typing import Iterable
 
 
 REQUIRED_METADATA_TABLES = (
@@ -70,20 +71,43 @@ def iter_json_array_records(path: Path, chunk_size: int = 1 << 20):
     raise ValueError(f"{path} ended before the JSON array closed.")
 
 
-def collect_available_camera_paths(dataset_root: Path) -> set[str]:
-    available_paths: set[str] = set()
-    for top_level in ("samples", "sweeps"):
-        base_dir = dataset_root / top_level
-        if not base_dir.exists():
-            continue
+def normalize_dataset_roots(dataset_root: Path | Iterable[Path] | None = None, dataset_roots: Iterable[Path] | None = None) -> list[Path]:
+    roots: list[Path] = []
+    if dataset_roots is not None:
+        roots.extend(Path(root) for root in dataset_roots)
+    elif dataset_root is not None:
+        if isinstance(dataset_root, Path):
+            roots.append(dataset_root)
+        else:
+            roots.extend(Path(root) for root in dataset_root)
 
-        for dirpath, _, filenames in os.walk(base_dir):
-            if "CAM_" not in dirpath.replace("\\", "/"):
+    normalized_roots: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        root_key = str(root)
+        if root_key in seen:
+            continue
+        seen.add(root_key)
+        normalized_roots.append(root)
+    return normalized_roots
+
+
+def collect_available_camera_paths(dataset_root: Path | Iterable[Path] | None = None, dataset_roots: Iterable[Path] | None = None) -> set[str]:
+    normalized_roots = normalize_dataset_roots(dataset_root=dataset_root, dataset_roots=dataset_roots)
+    available_paths: set[str] = set()
+    for root in normalized_roots:
+        for top_level in ("samples", "sweeps"):
+            base_dir = root / top_level
+            if not base_dir.exists():
                 continue
-            directory = Path(dirpath)
-            for filename in filenames:
-                relative_path = directory.joinpath(filename).relative_to(dataset_root)
-                available_paths.add(relative_path.as_posix())
+
+            for dirpath, _, filenames in os.walk(base_dir):
+                if "CAM_" not in dirpath.replace("\\", "/"):
+                    continue
+                directory = Path(dirpath)
+                for filename in filenames:
+                    relative_path = directory.joinpath(filename).relative_to(root)
+                    available_paths.add(relative_path.as_posix())
 
     return available_paths
 
@@ -113,17 +137,20 @@ def write_keyframe_csv(csv_path: Path, keyframe_paths: list[str], image_id_start
 
 
 def build_trainval_camera_subset(
-    dataset_root: Path,
     source_meta_dir: Path,
     output_meta_dir: Path,
     image_csv_path: Path,
     scene_token_path: Path,
     report_path: Path,
     image_id_start: int,
+    dataset_root: Path | Iterable[Path] | None = None,
+    dataset_roots: Iterable[Path] | None = None,
 ) -> dict:
-    available_camera_paths = collect_available_camera_paths(dataset_root)
+    normalized_roots = normalize_dataset_roots(dataset_root=dataset_root, dataset_roots=dataset_roots)
+    available_camera_paths = collect_available_camera_paths(dataset_roots=normalized_roots)
     if not available_camera_paths:
-        raise RuntimeError(f"No camera files were found under {dataset_root}.")
+        joined_roots = ", ".join(str(root) for root in normalized_roots) or "<none>"
+        raise RuntimeError(f"No camera files were found under {joined_roots}.")
 
     sample_data_records: list[dict] = []
     sample_tokens: set[str] = set()
@@ -201,7 +228,7 @@ def build_trainval_camera_subset(
     write_keyframe_csv(image_csv_path, keyframe_paths, image_id_start=image_id_start)
 
     report = {
-        "dataset_root": str(dataset_root),
+        "dataset_roots": [str(root) for root in normalized_roots],
         "source_meta_dir": str(source_meta_dir),
         "output_meta_dir": str(output_meta_dir),
         "image_csv_path": str(image_csv_path),

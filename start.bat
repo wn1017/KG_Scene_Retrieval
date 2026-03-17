@@ -165,7 +165,7 @@ if not exist "%CHNCLIP_MODEL_PATH%" (
 )
 if "%MISSING%"=="1" (
     echo.
-    echo [INFO] Run "conda run -n kg python scripts\prepare_trainval06_subset.py" to build the trainval06 subset metadata and CSV.
+    echo [INFO] Run "conda run -n kg python scripts\prepare_trainval06_subset.py" to build the configured trainval subset metadata and CSV.
     echo Startup aborted because required files are missing.
     exit /b 1
 )

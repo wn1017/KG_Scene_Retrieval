@@ -27,10 +27,9 @@ from config import (
     HIT_METADATA_CACHE_SIZE,
     IMAGE_CSV_PATH,
     IMAGE_ID_MIN,
+    NUSCENES_BLOB_ROOTS,
     NUSCENES_META_DIR,
     NUSCENES_ROOT,
-    NUSCENES_SAMPLES_DIR,
-    NUSCENES_SWEEPS_DIR,
     PRIMARY_CAMERA,
     VIDEO_CLIP_CACHE_SIZE,
     VIDEO_FPS,
@@ -134,6 +133,13 @@ def infer_camera_from_path(path_value: str | Path | None) -> str:
     return ""
 
 
+def get_blob_roots() -> list[Path]:
+    roots = [Path(root) for root in NUSCENES_BLOB_ROOTS]
+    if not roots:
+        roots = [NUSCENES_ROOT]
+    return roots
+
+
 def resolve_frame_path(raw_path: str | Path | None) -> Path | None:
     if raw_path is None:
         return None
@@ -148,24 +154,29 @@ def resolve_frame_path(raw_path: str | Path | None) -> Path | None:
     candidates.append(Path.cwd() / normalized)
 
     parts = PurePosixPath(normalized).parts
+    blob_roots = get_blob_roots()
     if parts:
         if parts[0] in {"samples", "sweeps"}:
-            candidates.append(NUSCENES_ROOT.joinpath(*parts))
+            for blob_root in blob_roots:
+                candidates.append(blob_root.joinpath(*parts))
         elif parts[0] == "img_data" and len(parts) >= 3:
             camera = parts[1]
             filename = parts[-1]
-            candidates.append(NUSCENES_SAMPLES_DIR / camera / filename)
-            candidates.append(NUSCENES_SWEEPS_DIR / camera / filename)
+            for blob_root in blob_roots:
+                candidates.append(blob_root / "samples" / camera / filename)
+                candidates.append(blob_root / "sweeps" / camera / filename)
         elif parts[0].startswith("CAM_"):
             camera = parts[0]
             filename = parts[-1]
-            candidates.append(NUSCENES_SAMPLES_DIR / camera / filename)
-            candidates.append(NUSCENES_SWEEPS_DIR / camera / filename)
+            for blob_root in blob_roots:
+                candidates.append(blob_root / "samples" / camera / filename)
+                candidates.append(blob_root / "sweeps" / camera / filename)
 
     basename = PurePosixPath(normalized).name
     metadata = BASENAME_TO_SAMPLE_DATA.get(basename)
     if metadata:
-        candidates.append(NUSCENES_ROOT / metadata["filename"])
+        for blob_root in blob_roots:
+            candidates.append(blob_root / metadata["filename"])
 
     seen: set[str] = set()
     for candidate in candidates:
@@ -188,11 +199,12 @@ def get_sample_data_for_frame(resolved_path: Path | None, raw_path: str | Path |
 
     if resolved_path:
         candidate_keys.append(resolved_path.name)
-        try:
-            relative_key = normalize_path_key(resolved_path.relative_to(NUSCENES_ROOT))
-            candidate_keys.append(relative_key)
-        except ValueError:
-            pass
+        for blob_root in get_blob_roots():
+            try:
+                relative_key = normalize_path_key(resolved_path.relative_to(blob_root))
+                candidate_keys.append(relative_key)
+            except ValueError:
+                continue
 
     for key in candidate_keys:
         if key in FILENAME_TO_SAMPLE_DATA:
@@ -539,6 +551,98 @@ def build_scene_filter_expr(scene_tokens: list[str]) -> str:
     return f'scene_token in ["{joined_tokens}"]'
 
 
+KG_ZERO_CANDIDATE_MODEL_NAME = "未执行向量检索"
+
+
+def build_zero_candidate_status(parsed_query: dict, prefix: str = "") -> str:
+    subset_scene_count = len(KG_SCENE_RECORDS)
+    weather = parsed_query.get("weather")
+    timeofday = parsed_query.get("time")
+    object_types = parsed_query.get("objects") or []
+    location_kind = parsed_query.get("location")
+
+    if timeofday and not any([weather, object_types, location_kind]):
+        core_message = (
+            f"当前 {subset_scene_count}-scene 子集没有 {timeofday} 场景；"
+            "已跳过知识图谱过滤，继续展示相似度检索结果。"
+        )
+    else:
+        condition_summary = format_parsed_query(parsed_query)
+        if condition_summary and "未提取到结构化条件" not in condition_summary:
+            core_message = (
+                f"当前 {subset_scene_count}-scene 子集没有满足 {condition_summary} 的场景；"
+                "已跳过知识图谱过滤，继续展示相似度检索结果。"
+            )
+        else:
+            core_message = (
+                f"当前 {subset_scene_count}-scene 子集没有满足条件的场景；"
+                "已跳过知识图谱过滤，继续展示相似度检索结果。"
+            )
+
+    if prefix:
+        return f"{prefix}；{core_message}"
+    return core_message
+
+
+def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str, bool]:
+    weather = parsed_query.get("weather")
+    timeofday = parsed_query.get("time")
+    object_types = parsed_query.get("objects") or []
+    location_kind = parsed_query.get("location")
+
+    if not any([weather, timeofday, object_types, location_kind]):
+        return [], "未提取到知识图谱过滤条件，已回退到全库搜索。", False
+
+    try:
+        neo4j_tokens = sanitize_candidate_scene_tokens(
+            query_scene_tokens(
+                weather=weather,
+                timeofday=timeofday,
+                object_types=object_types,
+                location_kind=location_kind,
+            )
+        )
+        valid_neo4j_tokens = [token for token in neo4j_tokens if token in KNOWN_SCENE_TOKENS]
+        if valid_neo4j_tokens:
+            if len(valid_neo4j_tokens) != len(neo4j_tokens):
+                ignored_count = len(neo4j_tokens) - len(valid_neo4j_tokens)
+                return valid_neo4j_tokens, (
+                    f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景，并忽略了 {ignored_count} 个无效 scene token。"
+                ), False
+            return valid_neo4j_tokens, f"Neo4j 已过滤出 {len(valid_neo4j_tokens)} 个场景。", False
+
+        if neo4j_tokens:
+            local_tokens = get_local_candidate_scene_tokens(
+                weather=weather,
+                timeofday=timeofday,
+                object_types=object_types,
+                location_kind=location_kind,
+            )
+            if local_tokens:
+                return local_tokens, f"Neo4j 返回了库外 scene token，已改用本地知识图谱过滤出 {len(local_tokens)} 个场景。", False
+            return [], build_zero_candidate_status(parsed_query, "Neo4j 返回了库外 scene token"), False
+
+        local_tokens = get_local_candidate_scene_tokens(
+            weather=weather,
+            timeofday=timeofday,
+            object_types=object_types,
+            location_kind=location_kind,
+        )
+        if local_tokens:
+            return local_tokens, f"Neo4j 未找到候选场景，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。", False
+        return [], build_zero_candidate_status(parsed_query, "Neo4j 未找到候选场景"), False
+    except RuntimeError:
+        local_tokens = get_local_candidate_scene_tokens(
+            weather=weather,
+            timeofday=timeofday,
+            object_types=object_types,
+            location_kind=location_kind,
+        )
+        if local_tokens:
+            return local_tokens, f"Neo4j 不可用，已由本地知识图谱过滤出 {len(local_tokens)} 个场景。", False
+        return [], build_zero_candidate_status(parsed_query, "Neo4j 不可用"), False
+
+
 def encode_text_query(text: str) -> tuple[np.ndarray, str]:
     if MODEL_LOAD_ERROR:
         raise RuntimeError(f"Models are unavailable: {MODEL_LOAD_ERROR}")
@@ -780,9 +884,9 @@ def collect_video_frames(anchor_record: dict) -> list[Path]:
     frame_paths = []
     seen_paths: set[str] = set()
     for item in sequence[start_index:end_index:VIDEO_FRAME_STRIDE]:
-        frame_path = NUSCENES_ROOT / item["filename"]
-        normalized_path = str(frame_path)
-        if frame_path.exists() and normalized_path not in seen_paths:
+        frame_path = resolve_frame_path(item["filename"])
+        normalized_path = str(frame_path) if frame_path else ""
+        if frame_path is not None and frame_path.exists() and normalized_path not in seen_paths:
             frame_paths.append(frame_path)
             seen_paths.add(normalized_path)
 
@@ -1465,6 +1569,44 @@ def build_kg_path_highlight_html(parsed_query: dict | None, kg_status: str) -> s
     )
 
 
+def build_kg_status_notice_html(kg_status: str) -> str:
+    core_status, _ = split_status_and_timing(kg_status)
+    if not core_status:
+        return ""
+
+    warning_keywords = ("未找到", "跳过", "回退", "失败", "不可用", "无满足")
+    tone = "warning" if any(keyword in core_status for keyword in warning_keywords) else "neutral"
+    return (
+        f"<div class='kg-status-note kg-status-note-hidden kg-status-note-{tone}'>"
+        "<div class='kg-status-note-label'>图谱状态</div>"
+        f"<div class='kg-status-note-body'>{escape(core_status)}</div>"
+        "</div>"
+    )
+
+
+def build_result_notice_html(kg_status: str) -> str:
+    core_status, _ = split_status_and_timing(kg_status)
+    if not core_status:
+        return ""
+
+    keywords = (
+        "已跳过知识图谱过滤",
+        "继续展示相似度检索结果",
+        "回退到全库搜索",
+        "Neo4j 不可用",
+        "未找到候选场景",
+    )
+    if not any(keyword in core_status for keyword in keywords):
+        return ""
+
+    return (
+        "<div class='result-inline-notice result-inline-notice-warning'>"
+        "<div class='result-inline-notice-label'>图谱未命中，已切换相似度检索</div>"
+        f"<div class='result-inline-notice-body'>{escape(core_status)}</div>"
+        "</div>"
+    )
+
+
 def build_timing_strip_html(kg_status: str) -> str:
     _, timing_text = split_status_and_timing(kg_status)
     chips = [item.strip() for item in timing_text.split(",") if item.strip()] if timing_text else []
@@ -1499,6 +1641,7 @@ def build_explanation_html(
         "</div>"
     )
     kg_path_highlight_html = build_kg_path_highlight_html(parsed_query, core_status)
+    kg_status_notice_html = build_kg_status_notice_html(core_status)
     nlp_reference_html = build_inline_reference_details("nlp")
     kg_reference_html = build_inline_reference_details("kg")
     return (
@@ -1518,6 +1661,7 @@ def build_explanation_html(
         f"{kg_reference_html}"
         "</div>"
         f"{kg_path_highlight_html}"
+        f"{kg_status_notice_html}"
         "</div>"
         "</div>"
         "</section>"
@@ -1652,6 +1796,7 @@ def build_explanation_html(
         "</div>"
     )
     kg_path_highlight_html = build_kg_path_highlight_html(parsed_query, core_status)
+    kg_status_notice_html = build_kg_status_notice_html(core_status)
     nlp_reference_html = build_inline_reference_details("nlp")
     kg_reference_html = build_inline_reference_details("kg")
     return (
@@ -1674,6 +1819,7 @@ def build_explanation_html(
         "</div>"
         "<div class='focus-card-body'>"
         f"{kg_path_highlight_html}"
+        f"{kg_status_notice_html}"
         "</div>"
         "</div>"
         "</div>"
@@ -1696,6 +1842,7 @@ INITIAL_STATUS_HTML = status_card(
 )
 
 INITIAL_EXPLANATION_HTML = build_explanation_html({}, "尚未执行知识图谱过滤。", "待命", "text2image", 0)
+INITIAL_RESULT_NOTICE_HTML = ""
 
 STATS_HTML = f"""
 <div class='stats-grid'>
@@ -1819,6 +1966,13 @@ body.lightbox-open {
 .stat-note { display:none; }
 .search-card, .results-shell { border-radius: var(--radius-xl); padding: 20px 22px; }
 .section-heading, .results-heading { margin: 10px 0 0; font-size: 1.18rem; font-weight: 800; letter-spacing: -0.04em; }
+#result-notice-panel {
+    min-height: 0;
+    margin: 10px 0 2px;
+}
+#result-notice-panel:empty {
+    display: none;
+}
 #query-box {
     border-radius: 32px;
     border:1px solid var(--line);
@@ -2073,6 +2227,57 @@ body.lightbox-open {
 .kg-path-list {
     display: grid;
     gap: 10px;
+}
+.kg-status-note-hidden {
+    display: none !important;
+}
+.result-inline-notice {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: 16px;
+    border: 1px solid rgba(223, 184, 93, 0.18);
+    background: linear-gradient(180deg, rgba(255, 250, 239, 0.92) 0%, rgba(255, 247, 228, 0.72) 100%);
+    box-shadow: 0 10px 24px rgba(191, 156, 82, 0.06);
+}
+.result-inline-notice-label {
+    color: #8d6a1f;
+    font-size: .75rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+}
+.result-inline-notice-body {
+    color: rgba(32,33,36,0.82);
+    font-size: .84rem;
+    line-height: 1.55;
+    word-break: break-word;
+}
+.kg-status-note {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid rgba(32,33,36,0.08);
+}
+.kg-status-note-warning {
+    background: linear-gradient(180deg, rgba(255,249,236,0.96) 0%, rgba(255,244,214,0.9) 100%);
+    border-color: rgba(251,188,5,0.22);
+}
+.kg-status-note-neutral {
+    background: linear-gradient(180deg, rgba(240,247,255,0.96) 0%, rgba(232,240,254,0.92) 100%);
+    border-color: rgba(26,115,232,0.16);
+}
+.kg-status-note-label {
+    color: var(--muted);
+    font-size: .78rem;
+    font-weight: 800;
+    letter-spacing: .05em;
+    margin-bottom: 6px;
+}
+.kg-status-note-body {
+    color: var(--text);
+    font-size: .92rem;
+    line-height: 1.7;
+    word-break: break-word;
 }
 .kg-path-row {
     display: grid;
@@ -2491,6 +2696,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
                 <div class='results-heading'>检索结果</div>
                 """
             )
+            result_notice_panel = gr.HTML(value=INITIAL_RESULT_NOTICE_HTML, visible=False, elem_id="result-notice-panel")
             with gr.Column(visible=True, elem_id="image_result_zone") as image_result_zone:
                 gr.HTML("<div class='result-zone-title'>图片结果</div>")
                 image_outputs = []
@@ -2574,6 +2780,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         return [
             gr.update(visible=(mode == "text2image")),
             gr.update(visible=(mode == "text2video")),
+            gr.update(value=INITIAL_RESULT_NOTICE_HTML, visible=False),
             build_preview_explanation(text, mode),
         ]
 
@@ -2678,12 +2885,13 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
     def update_progress(text: str, mode: str):
         query = text.strip()
         if not query:
-            return build_preview_explanation("", mode)
-        return build_preview_explanation(query, mode)
+            return [INITIAL_RESULT_NOTICE_HTML, build_preview_explanation("", mode)]
+        return [INITIAL_RESULT_NOTICE_HTML, build_preview_explanation(query, mode)]
 
     def build_output_values(
         image_results: list[tuple[Image.Image, str]] | None = None,
         video_results: list[tuple[str, str]] | None = None,
+        result_notice: str = INITIAL_RESULT_NOTICE_HTML,
         explanation: str = INITIAL_EXPLANATION_HTML,
     ) -> list:
         image_results = image_results or []
@@ -2700,34 +2908,52 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         values.append(None)
         values.append("")
         values.append(gr.update(visible=False))
+        values.append(gr.update(value=result_notice, visible=bool(result_notice)))
         values.append(explanation)
         return values
 
     def dynamic_retrieve(text: str, mode: str):
         query = text.strip()
         if not query:
-            return build_output_values(explanation=build_preview_explanation("", mode))
+            return build_output_values(
+                result_notice=INITIAL_RESULT_NOTICE_HTML,
+                explanation=build_preview_explanation("", mode),
+            )
         try:
             if mode == "text2image":
                 image_results, model_name, parsed_query, kg_status = retrieve_images(query)
                 explanation = build_explanation_html(parsed_query, kg_status, model_name, mode, len(image_results))
-                return build_output_values(image_results=image_results, explanation=explanation)
+                return build_output_values(
+                    image_results=image_results,
+                    result_notice=build_result_notice_html(kg_status),
+                    explanation=explanation,
+                )
 
             video_results, model_name, parsed_query, kg_status = retrieve_videos(query)
             explanation = build_explanation_html(parsed_query, kg_status, model_name, mode, len(video_results))
-            return build_output_values(video_results=video_results, explanation=explanation)
+            return build_output_values(
+                video_results=video_results,
+                result_notice=build_result_notice_html(kg_status),
+                explanation=explanation,
+            )
         except Exception:
-            return build_output_values(explanation=build_preview_explanation(query, mode))
+            return build_output_values(
+                result_notice=INITIAL_RESULT_NOTICE_HTML,
+                explanation=build_preview_explanation(query, mode),
+            )
 
     def clear_all():
-        return [""] + build_output_values(explanation=INITIAL_EXPLANATION_HTML)
+        return [""] + build_output_values(
+            result_notice=INITIAL_RESULT_NOTICE_HTML,
+            explanation=INITIAL_EXPLANATION_HTML,
+        )
 
     mode_select.change(
         fn=switch_result_zone,
         inputs=[mode_select, text_input],
-        outputs=[image_result_zone, video_result_zone, query_detail_panel],
+        outputs=[image_result_zone, video_result_zone, result_notice_panel, query_detail_panel],
     )
-    text_input.change(fn=update_progress, inputs=[text_input, mode_select], outputs=[query_detail_panel])
+    text_input.change(fn=update_progress, inputs=[text_input, mode_select], outputs=[result_notice_panel, query_detail_panel])
     submit_btn.click(
         fn=dynamic_retrieve,
         inputs=[text_input, mode_select],
@@ -2736,6 +2962,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         + video_outputs
         + video_caption_outputs
         + image_preview_outputs
+        + [result_notice_panel]
         + [query_detail_panel],
     )
     text_input.submit(
@@ -2746,6 +2973,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         + video_outputs
         + video_caption_outputs
         + image_preview_outputs
+        + [result_notice_panel]
         + [query_detail_panel],
     )
     clear_btn.click(
@@ -2756,6 +2984,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
         + video_outputs
         + video_caption_outputs
         + image_preview_outputs
+        + [result_notice_panel]
         + [query_detail_panel],
         js=CLOSE_IMAGE_PREVIEW_JS,
     )

@@ -151,11 +151,13 @@ class StartScriptTests(unittest.TestCase):
     def test_config_exposes_attu_settings(self):
         config_content = (ROOT / "config.py").read_text(encoding="utf-8")
 
-        self.assertIn('TRAINVAL06_SUBSET_NAME = "trainval06_camera_part5"', config_content)
-        self.assertIn('NUSCENES_ROOT = Path(r"D:\\nuScenes_Trainval06")', config_content)
-        self.assertIn('NUSCENES_META_SOURCE_DIR = NUSCENES_ROOT / NUSCENES_VERSION', config_content)
-        self.assertIn('NUSCENES_META_DIR = TRAINVAL06_ASSET_DIR / NUSCENES_VERSION', config_content)
-        self.assertIn('MILVUS_COLLECTION_NAME = "multimodal_search_trainval06_camera_part5"', config_content)
+        self.assertIn('TRAINVAL_SUBSET_NAME = "trainval_camera_part06_part10"', config_content)
+        self.assertIn('TRAINVAL_ROOT = Path(r"D:\\NUSCENES\\Trainval")', config_content)
+        self.assertIn('NUSCENES_META_ROOT = TRAINVAL_ROOT / "metadata"', config_content)
+        self.assertIn('NUSCENES_META_SOURCE_DIR = NUSCENES_META_ROOT / NUSCENES_VERSION', config_content)
+        self.assertIn('NUSCENES_META_DIR = TRAINVAL_ASSET_DIR / NUSCENES_VERSION', config_content)
+        self.assertIn('NUSCENES_BLOB_ROOTS = [', config_content)
+        self.assertIn('MILVUS_COLLECTION_NAME = "multimodal_search_trainval_camera_part06_part10"', config_content)
         self.assertIn('DOCKER_ATTU_IMAGE = "zilliz/attu:v2.6.3"', config_content)
         self.assertIn('ATTU_CONTAINER_NAME = "attu"', config_content)
         self.assertIn('ATTU_MILVUS_URL = "host.docker.internal:19530"', config_content)

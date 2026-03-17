@@ -215,18 +215,39 @@ class AppInterfaceTests(unittest.TestCase):
         with patch.object(app, "retrieve_images", return_value=fake_result):
             output = app.dynamic_retrieve("rainy night with pedestrians", "text2image")
 
-        expected_output_count = app.IMAGE_RESULT_COUNT * 2 + app.VIDEO_RESULT_COUNT * 2 + 4
+        expected_output_count = app.IMAGE_RESULT_COUNT * 2 + app.VIDEO_RESULT_COUNT * 2 + 5
         self.assertEqual(len(output), expected_output_count)
         self.assertIsNotNone(output[0])
         self.assertEqual(output[app.IMAGE_RESULT_COUNT], "caption")
-        self.assertIsNone(output[-4])
-        self.assertEqual(output[-3], "")
+        self.assertIsNone(output[-5])
+        self.assertEqual(output[-4], "")
+        self.assertIsInstance(output[-3], dict)
+        self.assertFalse(output[-3]["visible"])
         self.assertIsInstance(output[-2], dict)
         self.assertFalse(output[-2]["visible"])
+        self.assertEqual(output[-2]["value"], "")
         self.assertIn("detail-panel", output[-1])
         self.assertIn("focus-card", output[-1])
         self.assertNotIn("status-card", output[-1])
         self.assertNotIn("Chinese-CLIP", output[-1])
+
+    def test_dynamic_retrieve_puts_fallback_notice_in_results_header_banner(self):
+        fake_result = (
+            [],
+            "English-CLIP",
+            {"weather": "foggy", "time": "night", "objects": []},
+            "Neo4j 未找到候选场景；当前 170-scene 子集没有满足 天气=foggy; 时段=night 的场景；已跳过知识图谱过滤，继续展示相似度检索结果。",
+        )
+
+        with patch.object(app, "retrieve_images", return_value=fake_result):
+            output = app.dynamic_retrieve("foggy night", "text2image")
+
+        self.assertIsInstance(output[-2], dict)
+        self.assertTrue(output[-2]["visible"])
+        self.assertIn("result-inline-notice", output[-2]["value"])
+        self.assertIn("Neo4j 未找到候选场景", output[-2]["value"])
+        self.assertIn("继续展示相似度检索结果", output[-2]["value"])
+        self.assertIn("kg-status-note-hidden", output[-1])
 
     def test_custom_css_keeps_five_column_images_with_custom_preview_button(self):
         self.assertNotIn("button:hover, .gr-button:hover", app.custom_css)
@@ -592,6 +613,124 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertEqual(app.MODE_LABELS["text2image"], "搜索图片")
         self.assertEqual(app.MODE_LABELS["text2video"], "搜索视频片段")
         self.assertIn("show_fullscreen_button=False", source)
+    # Override legacy expectations after the KG zero-candidate behavior changed
+    # from hard-stop to fallback similarity retrieval.
+    def test_get_candidate_scene_tokens_reports_zero_candidates_when_no_valid_tokens_exist(self):
+        parsed_query = {
+            "weather": "rainy",
+            "time": "night",
+            "objects": ["pedestrian"],
+            "location": "intersection",
+        }
+
+        with patch.object(app, "query_scene_tokens", return_value=["scene-token"]), patch.object(
+            app, "get_local_candidate_scene_tokens", return_value=[]
+        ):
+            tokens, status, should_stop = app.get_candidate_scene_tokens(parsed_query)
+
+        self.assertEqual(tokens, [])
+        self.assertIn("Neo4j", status)
+        self.assertTrue(status)
+        self.assertFalse(should_stop)
+        self.assertIn("相似度检索", status)
+
+    def test_get_candidate_scene_tokens_reports_no_night_scene_in_current_like_subset(self):
+        parsed_query = app.parse_query("night")
+        subset_records = [
+            {
+                "scene_token": f"scene-{index}",
+                "scene_name": f"scene-{index}",
+                "description": "day scene",
+                "num_samples": 1,
+                "weather": "clear",
+                "timeofday": "day",
+                "location_area": "boston-seaport",
+                "location_kind": "urban",
+                "location_key": f"boston-seaport|urban-{index}",
+                "objects": {},
+            }
+            for index in range(85)
+        ]
+
+        with patch.object(app, "KG_SCENE_RECORDS", subset_records), patch.object(
+            app, "query_scene_tokens", side_effect=RuntimeError("Neo4j unavailable")
+        ):
+            tokens, status, should_stop = app.get_candidate_scene_tokens(parsed_query)
+
+        self.assertEqual(parsed_query["time"], "night")
+        self.assertEqual(tokens, [])
+        self.assertFalse(should_stop)
+        self.assertIn("85-scene", status)
+        self.assertIn("night", status)
+        self.assertIn("相似度检索", status)
+
+    def test_retrieve_images_skips_vector_search_when_structured_filters_have_no_candidates(self):
+        subset_records = [
+            {
+                "scene_token": f"scene-{index}",
+                "scene_name": f"scene-{index}",
+                "description": "day scene",
+                "num_samples": 1,
+                "weather": "clear",
+                "timeofday": "day",
+                "location_area": "boston-seaport",
+                "location_kind": "urban",
+                "location_key": f"boston-seaport|urban-{index}",
+                "objects": {},
+            }
+            for index in range(85)
+        ]
+        query_vector = np.zeros(4, dtype=np.float32)
+
+        with patch.object(app, "KG_SCENE_RECORDS", subset_records), patch.object(
+            app, "query_scene_tokens", side_effect=RuntimeError("Neo4j unavailable")
+        ), patch.object(app, "encode_text_query", return_value=(query_vector, "English-CLIP")) as encode_mock, patch.object(
+            app, "search_frame_hits", return_value=[]
+        ) as search_mock:
+            image_results, model_name, parsed_query, kg_status = app.retrieve_images("夜间")
+
+        self.assertEqual(parsed_query["time"], "night")
+        self.assertEqual(image_results, [])
+        self.assertEqual(model_name, "English-CLIP")
+        self.assertIn("85-scene", kg_status)
+        self.assertIn("night", kg_status)
+        self.assertIn("相似度检索", kg_status)
+        encode_mock.assert_called_once()
+        search_mock.assert_called_once_with(query_vector, app.IMAGE_RESULT_COUNT, [])
+
+    def test_retrieve_videos_skips_vector_search_when_structured_filters_have_no_candidates(self):
+        subset_records = [
+            {
+                "scene_token": f"scene-{index}",
+                "scene_name": f"scene-{index}",
+                "description": "day scene",
+                "num_samples": 1,
+                "weather": "clear",
+                "timeofday": "day",
+                "location_area": "boston-seaport",
+                "location_kind": "urban",
+                "location_key": f"boston-seaport|urban-{index}",
+                "objects": {},
+            }
+            for index in range(85)
+        ]
+        query_vector = np.zeros(4, dtype=np.float32)
+
+        with patch.object(app, "KG_SCENE_RECORDS", subset_records), patch.object(
+            app, "query_scene_tokens", side_effect=RuntimeError("Neo4j unavailable")
+        ), patch.object(app, "encode_text_query", return_value=(query_vector, "English-CLIP")) as encode_mock, patch.object(
+            app, "search_frame_hits", return_value=[]
+        ) as search_mock:
+            video_results, model_name, parsed_query, kg_status = app.retrieve_videos("夜间")
+
+        self.assertEqual(parsed_query["time"], "night")
+        self.assertEqual(video_results, [])
+        self.assertEqual(model_name, "English-CLIP")
+        self.assertIn("85-scene", kg_status)
+        self.assertIn("night", kg_status)
+        self.assertIn("相似度检索", kg_status)
+        encode_mock.assert_called_once()
+        search_mock.assert_called_once_with(query_vector, app.VIDEO_SEARCH_LIMIT, [])
 
 
 if __name__ == "__main__":
