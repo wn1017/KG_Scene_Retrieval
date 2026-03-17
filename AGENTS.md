@@ -23,6 +23,7 @@
 19. When describing merge work across multiple git worktrees, distinguish clearly between updating a feature branch from main and delivering the feature branch back into main; do not describe those as the same step.
 20. When reporting that a UI status or hint is visible, confirm the rendered user-facing panel contains the text rather than inferring visibility from backend return values alone.
 21. When the user wants retrieval fallback messaging near the results list, place it in the results header area rather than inside the KG mapping card.
+22. When changing retrieval fallback hints, keep the banner label concise but make the body explicitly describe which KG conditions were applied, relaxed, or replaced by full-collection similarity search.
 
 ## Python Environment
 

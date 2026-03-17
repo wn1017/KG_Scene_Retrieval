@@ -249,6 +249,28 @@ class AppInterfaceTests(unittest.TestCase):
         self.assertIn("继续展示相似度检索结果", output[-2]["value"])
         self.assertIn("kg-status-note-hidden", output[-1])
 
+    def test_build_result_notice_html_uses_detailed_banner_for_relaxed_location_fallback(self):
+        status = (
+            "Neo4j 已过滤出 1 个场景。"
+            "；严格知识图谱过滤未命中相似帧，原始条件为 时段=day; 位置=street; 对象=car"
+            "；已放宽位置条件，改用 时段=day; 对象=car 继续执行相似度检索"
+            "；Neo4j 已过滤出 41 个场景。"
+        )
+
+        html = app.build_result_notice_html(status)
+
+        self.assertIn("严格图谱过滤无帧命中，已放宽位置条件", html)
+        self.assertIn("原始条件为 时段=day; 位置=street; 对象=car", html)
+        self.assertIn("已放宽位置条件", html)
+
+    def test_query_box_placeholder_uses_verified_english_example_and_single_line_submit(self):
+        source = Path(app.__file__).read_text(encoding="utf-8")
+
+        self.assertIn("cars at intersection in daytime", source)
+        self.assertIn('placeholder="例如：夜间路口有行人；或 cars at intersection in daytime"', source)
+        self.assertIn("lines=1", source)
+        self.assertIn("text_input.submit(", source)
+
     def test_custom_css_keeps_five_column_images_with_custom_preview_button(self):
         self.assertNotIn("button:hover, .gr-button:hover", app.custom_css)
         self.assertIn("#search-btn:hover, #clear-btn:hover", app.custom_css)

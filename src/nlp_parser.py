@@ -10,7 +10,7 @@ CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
 WEATHER_KEYWORDS = OrderedDict(
     [
         ("rainy", ["rain", "rainy", "wet", "after rain", "雨", "雨天", "下雨", "雨夜"]),
-        ("sunny", ["sunny", "clear", "晴", "晴天", "白天晴朗"]),
+        ("clear", ["sunny", "clear", "晴", "晴天", "白天晴朗"]),
         ("foggy", ["fog", "foggy", "雾", "雾天"]),
     ]
 )
@@ -19,7 +19,7 @@ TIME_KEYWORDS = OrderedDict(
     [
         ("night", ["night", "nighttime", "dark", "夜", "夜晚", "晚上", "夜间", "深夜"]),
         ("dusk", ["dusk", "twilight", "sunset", "黄昏", "傍晚"]),
-        ("day", ["day", "daytime", "sunny", "daylight", "白天", "白昼", "日间"]),
+        ("day", ["day", "daytime", "daylight", "白天", "白昼", "日间"]),
     ]
 )
 

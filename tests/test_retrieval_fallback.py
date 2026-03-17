@@ -10,6 +10,76 @@ class RetrievalFallbackTests(unittest.TestCase):
     def setUp(self):
         app.clear_runtime_caches()
 
+    def test_search_hits_with_progressive_fallback_relaxes_location_before_using_broader_candidates(self):
+        query_vector = np.zeros(4, dtype=np.float32)
+        parsed_query = {
+            "weather": None,
+            "time": "day",
+            "objects": ["car"],
+            "location": "street",
+        }
+        relaxed_hits = [{"id": 101, "scene_token": "scene-relaxed", "frame_path": "samples/CAM_FRONT/match.jpg"}]
+
+        with patch.object(
+            app,
+            "get_candidate_scene_tokens",
+            return_value=(["scene-relaxed"], "Neo4j 已过滤出 41 个场景。", False),
+        ) as candidate_mock, patch.object(
+            app,
+            "search_frame_hits",
+            side_effect=[[], relaxed_hits],
+        ) as search_mock:
+            hits, status = app.search_hits_with_progressive_fallback(
+                query_vector,
+                app.IMAGE_RESULT_COUNT,
+                parsed_query,
+                ["scene-strict"],
+                "Neo4j 已过滤出 1 个场景。",
+            )
+
+        self.assertEqual(hits, relaxed_hits)
+        self.assertIn("严格知识图谱过滤未命中相似帧", status)
+        self.assertIn("原始条件为 时段=day; 位置=street; 对象=car", status)
+        self.assertIn("已放宽位置条件", status)
+        self.assertIn("时段=day; 对象=car", status)
+        self.assertNotIn("已回退到全库相似度检索", status)
+        self.assertEqual(candidate_mock.call_args.args[0]["location"], None)
+        self.assertEqual(search_mock.call_args_list[0].args[2], ["scene-strict"])
+        self.assertEqual(search_mock.call_args_list[1].args[2], ["scene-relaxed"])
+
+    def test_search_hits_with_progressive_fallback_falls_back_to_full_library_after_location_relaxation(self):
+        query_vector = np.zeros(4, dtype=np.float32)
+        parsed_query = {
+            "weather": None,
+            "time": "day",
+            "objects": ["car"],
+            "location": "street",
+        }
+        fallback_hits = [{"id": 202, "scene_token": "scene-global", "frame_path": "samples/CAM_FRONT/global.jpg"}]
+
+        with patch.object(
+            app,
+            "get_candidate_scene_tokens",
+            return_value=(["scene-relaxed"], "Neo4j 已过滤出 85 个场景。", False),
+        ), patch.object(
+            app,
+            "search_frame_hits",
+            side_effect=[[], [], fallback_hits],
+        ) as search_mock:
+            hits, status = app.search_hits_with_progressive_fallback(
+                query_vector,
+                app.IMAGE_RESULT_COUNT,
+                parsed_query,
+                ["scene-strict"],
+                "Neo4j 已过滤出 1 个场景。",
+            )
+
+        self.assertEqual(hits, fallback_hits)
+        self.assertIn("严格知识图谱过滤未命中相似帧", status)
+        self.assertIn("已放宽位置条件", status)
+        self.assertIn("已回退到全库相似度检索", status)
+        self.assertEqual(search_mock.call_args_list[2].args[2], [])
+
     def test_dynamic_retrieve_surfaces_fallback_status_in_visible_detail_panel(self):
         fake_result = (
             [],

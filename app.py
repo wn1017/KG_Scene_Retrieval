@@ -487,13 +487,44 @@ def build_zero_candidate_status(parsed_query: dict, prefix: str = "") -> str:
     return core_message
 
 
+def has_kg_filter_conditions(parsed_query: dict | None) -> bool:
+    parsed_query = parsed_query or {}
+    return bool(
+        parsed_query.get("weather")
+        or parsed_query.get("time")
+        or (parsed_query.get("objects") or [])
+        or parsed_query.get("location")
+    )
+
+
+def clone_parsed_query(parsed_query: dict, **overrides) -> dict:
+    cloned_query = dict(parsed_query or {})
+    cloned_query["objects"] = list(cloned_query.get("objects") or [])
+    cloned_query["highlight_matches"] = list(cloned_query.get("highlight_matches") or [])
+    for key, value in overrides.items():
+        cloned_query[key] = value
+    return cloned_query
+
+
+def join_status_messages(*parts: str) -> str:
+    normalized_parts: list[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if not text:
+            continue
+        text = text.rstrip("；。")
+        if text and text not in normalized_parts:
+            normalized_parts.append(text)
+    return "；".join(normalized_parts) + ("。" if normalized_parts else "")
+
+
 def get_candidate_scene_tokens(parsed_query: dict) -> tuple[list[str], str, bool]:
     weather = parsed_query.get("weather")
     timeofday = parsed_query.get("time")
     object_types = parsed_query.get("objects") or []
     location_kind = parsed_query.get("location")
 
-    if not any([weather, timeofday, object_types, location_kind]):
+    if not has_kg_filter_conditions(parsed_query):
         return [], "未提取到知识图谱过滤条件，已回退到全库搜索。", False
 
     try:
@@ -785,6 +816,58 @@ def search_frame_hits(query_vector: np.ndarray, limit: int, candidate_scene_toke
             COLLECTION_LOAD_CACHE_IDS.clear()
             raise RuntimeError(f"Milvus collection unavailable: {second_exc}") from second_exc
 
+
+def search_hits_with_progressive_fallback(
+    query_vector: np.ndarray,
+    limit: int,
+    parsed_query: dict,
+    candidate_scene_tokens: list[str] | None,
+    kg_status: str,
+) -> tuple[list[dict], str]:
+    hits = search_frame_hits(query_vector, limit, candidate_scene_tokens)
+    if hits or not candidate_scene_tokens:
+        return hits, kg_status
+
+    strict_summary = format_parsed_query(parsed_query) or "未提取到结构化条件"
+    strict_miss_status = join_status_messages(
+        kg_status,
+        f"严格知识图谱过滤未命中相似帧，原始条件为 {strict_summary}",
+    )
+
+    if parsed_query.get("location"):
+        relaxed_query = clone_parsed_query(parsed_query, location=None)
+        relaxed_summary = format_parsed_query(relaxed_query) or "仅语义相似度"
+
+        if has_kg_filter_conditions(relaxed_query):
+            relaxed_scene_tokens, relaxed_status, _ = get_candidate_scene_tokens(relaxed_query)
+            relaxed_hits = search_frame_hits(query_vector, limit, relaxed_scene_tokens)
+            relaxed_notice = join_status_messages(
+                strict_miss_status,
+                f"已放宽位置条件，改用 {relaxed_summary} 继续执行相似度检索",
+                relaxed_status,
+            )
+            if relaxed_hits:
+                return relaxed_hits, relaxed_notice
+
+            full_library_hits = search_frame_hits(query_vector, limit, [])
+            return full_library_hits, join_status_messages(
+                relaxed_notice,
+                "放宽位置条件后仍未命中相似帧，已回退到全库相似度检索，继续展示结果",
+            )
+
+        full_library_hits = search_frame_hits(query_vector, limit, [])
+        return full_library_hits, join_status_messages(
+            strict_miss_status,
+            "已放宽位置条件，但不再存在可用的知识图谱过滤条件",
+            "未提取到知识图谱过滤条件，已回退到全库搜索",
+        )
+
+    full_library_hits = search_frame_hits(query_vector, limit, [])
+    return full_library_hits, join_status_messages(
+        strict_miss_status,
+        "已回退到全库相似度检索，继续展示结果",
+    )
+
 def build_image_caption(
     record: dict,
     parsed_query: dict | None = None,
@@ -823,7 +906,13 @@ def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict
     timings["clip"] = time.perf_counter() - stage_started_at
 
     stage_started_at = time.perf_counter()
-    hits = search_frame_hits(query_vector, IMAGE_RESULT_COUNT, candidate_scene_tokens)
+    hits, kg_status = search_hits_with_progressive_fallback(
+        query_vector,
+        IMAGE_RESULT_COUNT,
+        parsed_query,
+        candidate_scene_tokens,
+        kg_status,
+    )
     timings["milvus"] = time.perf_counter() - stage_started_at
 
     stage_started_at = time.perf_counter()
@@ -1079,7 +1168,13 @@ def retrieve_videos(text: str) -> tuple[list[tuple[str, str]], str, dict, str]:
     timings["clip"] = time.perf_counter() - stage_started_at
 
     stage_started_at = time.perf_counter()
-    hits = search_frame_hits(query_vector, VIDEO_SEARCH_LIMIT, candidate_scene_tokens)
+    hits, kg_status = search_hits_with_progressive_fallback(
+        query_vector,
+        VIDEO_SEARCH_LIMIT,
+        parsed_query,
+        candidate_scene_tokens,
+        kg_status,
+    )
     timings["milvus"] = time.perf_counter() - stage_started_at
 
     stage_started_at = time.perf_counter()
@@ -1167,6 +1262,10 @@ def summarize_candidate_source(kg_status: str) -> str:
     status = kg_status or ""
     if "尚未执行" in status or "提交后确定候选来源" in status:
         return "待执行"
+    if "已放宽位置条件" in status:
+        return "位置放宽后检索"
+    if "已回退到全库相似度检索" in status:
+        return "全库相似度回退"
     if "本地知识图谱" in status or "本地 KG" in status or "local KG filtered" in status:
         return "本地知识图谱过滤"
     if "Neo4j 已过滤出" in status or "Neo4j filtered" in status:
@@ -1590,6 +1689,9 @@ def build_result_notice_html(kg_status: str) -> str:
         return ""
 
     keywords = (
+        "严格知识图谱过滤未命中相似帧",
+        "已放宽位置条件",
+        "已回退到全库相似度检索",
         "已跳过知识图谱过滤",
         "继续展示相似度检索结果",
         "回退到全库搜索",
@@ -1599,9 +1701,20 @@ def build_result_notice_html(kg_status: str) -> str:
     if not any(keyword in core_status for keyword in keywords):
         return ""
 
+    if "严格知识图谱过滤未命中相似帧" in core_status and "已放宽位置条件" in core_status:
+        label = "严格图谱过滤无帧命中，已放宽位置条件"
+    elif "严格知识图谱过滤未命中相似帧" in core_status and "已回退到全库相似度检索" in core_status:
+        label = "严格图谱过滤无帧命中，已回退到全库搜索"
+    elif "未提取到知识图谱过滤条件" in core_status:
+        label = "未提取到知识图谱过滤条件，已回退到全库搜索"
+    elif "Neo4j 不可用" in core_status:
+        label = "图谱不可用，已切换相似度检索"
+    else:
+        label = "图谱未命中，已切换相似度检索"
+
     return (
         "<div class='result-inline-notice result-inline-notice-warning'>"
-        "<div class='result-inline-notice-label'>图谱未命中，已切换相似度检索</div>"
+        f"<div class='result-inline-notice-label'>{escape(label)}</div>"
         f"<div class='result-inline-notice-body'>{escape(core_status)}</div>"
         "</div>"
     )
@@ -2671,8 +2784,8 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Base(), fill_width=True) as iface
             )
             text_input = gr.Textbox(
                 show_label=False,
-                placeholder="例如：夜间路口有行人；或 urban road with cars in daytime",
-                lines=2,
+                placeholder="例如：夜间路口有行人；或 cars at intersection in daytime",
+                lines=1,
                 container=False,
                 elem_id="query-box",
             )

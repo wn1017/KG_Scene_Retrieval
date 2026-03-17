@@ -2,6 +2,8 @@ import pathlib
 import subprocess
 import unittest
 
+import config
+
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 START_BAT = ROOT / "start.bat"
@@ -17,6 +19,21 @@ def run_start_bat(args: str, timeout: int = 180) -> subprocess.CompletedProcess[
     )
 
 
+def configured_start_inputs_exist() -> bool:
+    required_paths = [
+        pathlib.Path(config.IMAGE_CSV_PATH),
+        pathlib.Path(config.NUSCENES_META_DIR) / "scene.json",
+        pathlib.Path(config.NUSCENES_META_DIR) / "sample.json",
+        pathlib.Path(config.NUSCENES_META_DIR) / "sample_data.json",
+        pathlib.Path(config.NUSCENES_META_DIR) / "sample_annotation.json",
+        pathlib.Path(config.ENGCLIP_MODEL_DIR) / "config.json",
+        pathlib.Path(config.ENGCLIP_MODEL_DIR) / "pytorch_model.bin",
+        pathlib.Path(config.CHNCLIP_MODEL_DIR) / "config.json",
+        pathlib.Path(config.CHNCLIP_MODEL_DIR) / "pytorch_model.bin",
+    ]
+    return all(path.exists() for path in required_paths)
+
+
 class StartScriptTests(unittest.TestCase):
     def test_check_mode_completes_successfully(self):
         completed = run_start_bat("--check")
@@ -30,8 +47,13 @@ class StartScriptTests(unittest.TestCase):
                 completed.stderr,
             ]
         )
-        self.assertEqual(completed.returncode, 0, message)
-        self.assertIn("Check completed successfully.", completed.stdout, message)
+        if configured_start_inputs_exist():
+            self.assertEqual(completed.returncode, 0, message)
+            self.assertIn("Check completed successfully.", completed.stdout, message)
+        else:
+            self.assertEqual(completed.returncode, 1, message)
+            self.assertIn("Startup aborted because required files are missing.", completed.stdout, message)
+            self.assertIn("Press any key to close this window.", completed.stdout, message)
 
     def test_check_mode_uses_resolved_ports(self):
         completed = run_start_bat("--check")
@@ -133,6 +155,13 @@ class StartScriptTests(unittest.TestCase):
         self.assertNotIn("import app; print('APP_IMPORT_OK')", content)
         self.assertIn("compile(Path(r'app.py').read_text(encoding='utf-8'), 'app.py', 'exec')", content)
         self.assertIn("APP_SYNTAX_OK", content)
+
+    def test_start_script_keeps_error_window_open_for_double_click_failures(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn(":exit_with_pause", content)
+        self.assertIn("echo [INFO] Press any key to close this window.", content)
+        self.assertIn("goto exit_with_pause", content)
 
     def test_start_script_manages_attu_container(self):
         content = START_BAT.read_text(encoding="ascii")
