@@ -1,0 +1,22 @@
+[
+  {
+    "strategy": "pure_clip",
+    "queries": 20,
+    "precision@5": 0.07999999999999999,
+    "recall@5": 0.4,
+    "mAP": 0.2889186507936508,
+    "constraint_consistency@5": 0.32000000000000006,
+    "avg_response_time_seconds": 0.1002808850000747,
+    "strict_zero_candidate_queries": 0
+  },
+  {
+    "strategy": "kg_clip_strict",
+    "queries": 20,
+    "precision@5": 0.11000000000000001,
+    "recall@5": 0.55,
+    "mAP": 0.4904761904761904,
+    "constraint_consistency@5": 0.7550000000000001,
+    "avg_response_time_seconds": 0.21443920000001526,
+    "strict_zero_candidate_queries": 0
+  }
+]

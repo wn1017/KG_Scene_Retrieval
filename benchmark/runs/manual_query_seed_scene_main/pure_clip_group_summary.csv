@@ -1,0 +1,4 @@
+﻿strategy,query_group,queries,precision@5,recall@5,mAP,constraint_consistency@5,avg_response_time_seconds,strict_zero_candidate_queries
+pure_clip,open_semantic,2,0.2,1.0,0.75,0.6,0.04630700000006982,0
+pure_clip,three_plus,16,0.07500000000000001,0.375,0.2673983134920635,0.2625,0.11048293125003283,0
+pure_clip,two_condition,2,0.0,0.0,0.0,0.5,0.07263840000041455,0

@@ -884,7 +884,11 @@ def build_image_caption(
         caption_parts.append(("场景", str(record["scene_token"])))
     if record.get("camera"):
         caption_parts.append(("相机", str(record["camera"])))
-    return build_result_details_html(caption_parts[:4])
+    if record.get("resolved_frame_path"):
+        caption_parts.append(("图片路径", str(record["resolved_frame_path"])))
+    if record.get("raw_frame_path"):
+        caption_parts.append(("原始索引路径", str(record["raw_frame_path"])))
+    return build_result_details_html(caption_parts)
 
 
 def retrieve_images(text: str) -> tuple[list[tuple[Image.Image, str]], str, dict, str]:
@@ -954,25 +958,9 @@ def collect_video_frames(anchor_record: dict) -> list[Path]:
     if not sequence:
         return [resolved_path] if resolved_path and resolved_path.exists() else []
 
-    anchor_token = sample_data.get("sample_data_token", "")
-    anchor_index = None
-    for index, item in enumerate(sequence):
-        if item.get("sample_data_token") == anchor_token:
-            anchor_index = index
-            break
-
-    if anchor_index is None:
-        anchor_timestamp = sample_data.get("timestamp", 0)
-        anchor_index = min(range(len(sequence)), key=lambda idx: abs(sequence[idx]["timestamp"] - anchor_timestamp))
-
-    half_window = VIDEO_MAX_FRAMES // 2
-    start_index = max(0, anchor_index - half_window)
-    end_index = min(len(sequence), start_index + VIDEO_MAX_FRAMES)
-    start_index = max(0, end_index - VIDEO_MAX_FRAMES)
-
     frame_paths = []
     seen_paths: set[str] = set()
-    for item in sequence[start_index:end_index:VIDEO_FRAME_STRIDE]:
+    for item in sequence[::VIDEO_FRAME_STRIDE]:
         frame_path = resolve_frame_path(item["filename"])
         normalized_path = str(frame_path) if frame_path else ""
         if frame_path is not None and frame_path.exists() and normalized_path not in seen_paths:
@@ -1142,10 +1130,10 @@ def build_video_caption(
         caption_parts.append(("场景", str(record["scene_name"])))
     elif record.get("scene_token"):
         caption_parts.append(("场景", str(record["scene_token"])))
-    clip_summary = f"{len(frame_paths)} 帧"
+    clip_summary = f"scene整段视频 · {len(frame_paths)} 帧"
     if record.get("camera"):
         clip_summary = f"{record['camera']} · {clip_summary}"
-    caption_parts.append(("片段", clip_summary))
+    caption_parts.append(("视频", clip_summary))
     return build_result_details_html(caption_parts[:4])
 
 
@@ -1481,7 +1469,7 @@ def build_result_reason_tags(
     record_objects = {item.strip() for item in str(record.get("obj_types") or "").split(",") if item.strip()}
     matched_objects = [obj for obj in parsed_query.get("objects") or [] if obj in record_objects]
     if matched_objects:
-        tags.append("对象 " + "/".join(matched_objects[:2]))
+        tags.append("对象 " + "/".join(matched_objects))
 
     record_location = str(record.get("location") or "")
     if parsed_query.get("location") and parsed_query["location"] in record_location:

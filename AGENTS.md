@@ -24,6 +24,11 @@
 20. When reporting that a UI status or hint is visible, confirm the rendered user-facing panel contains the text rather than inferring visibility from backend return values alone.
 21. When the user wants retrieval fallback messaging near the results list, place it in the results header area rather than inside the KG mapping card.
 22. When changing retrieval fallback hints, keep the banner label concise but make the body explicitly describe which KG conditions were applied, relaxed, or replaced by full-collection similarity search.
+23. When the user specifies the original project directory as the workspace, switch to that directory before making further edits and do not continue implementation in a stale worktree.
+24. When the user asks to keep evaluation controls inside the existing annotation page on port 7861, integrate them into that page instead of creating a separate UI unless the user approves a split workflow.
+25. When a new benchmark replaces a legacy annotation benchmark, switch the UI data source to the new benchmark and isolate its annotated outputs instead of leaving the UI pointed at legacy CSV files.
+26. When the user defines the image-first, Neo4j-aligned manual benchmark as the thesis main experiment, treat it as the main experiment and position metadata-grounded results only as supporting or auxiliary evidence unless the user changes that decision.
+27. When changing text2video to scene-level output, ensure each returned video contains frames from exactly one complete scene on a single camera stream and never merges frames from multiple scenes.
 
 ## Python Environment
 

@@ -1,0 +1,3 @@
+﻿strategy,queries,precision@5,recall@5,mAP,constraint_consistency@5,avg_response_time_seconds,response_time_protocol,timing_warmup,timing_runs,strict_zero_candidate_queries
+pure_clip,20,0.07999999999999999,0.4,0.2889186507936508,0.32000000000000006,0.016367465000121227,query_level_median_then_macro_average,1,5,0
+kg_clip_strict,20,0.11000000000000001,0.55,0.4904761904761904,0.7550000000000001,0.11560543500008862,query_level_median_then_macro_average,1,5,0

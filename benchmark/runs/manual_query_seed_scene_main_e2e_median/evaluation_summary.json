@@ -1,0 +1,28 @@
+[
+  {
+    "strategy": "pure_clip",
+    "queries": 20,
+    "precision@5": 0.07999999999999999,
+    "recall@5": 0.4,
+    "mAP": 0.2889186507936508,
+    "constraint_consistency@5": 0.32000000000000006,
+    "avg_response_time_seconds": 0.016367465000121227,
+    "response_time_protocol": "query_level_median_then_macro_average",
+    "timing_warmup": 1,
+    "timing_runs": 5,
+    "strict_zero_candidate_queries": 0
+  },
+  {
+    "strategy": "kg_clip_strict",
+    "queries": 20,
+    "precision@5": 0.11000000000000001,
+    "recall@5": 0.55,
+    "mAP": 0.4904761904761904,
+    "constraint_consistency@5": 0.7550000000000001,
+    "avg_response_time_seconds": 0.11560543500008862,
+    "response_time_protocol": "query_level_median_then_macro_average",
+    "timing_warmup": 1,
+    "timing_runs": 5,
+    "strict_zero_candidate_queries": 0
+  }
+]

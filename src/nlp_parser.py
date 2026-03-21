@@ -50,10 +50,10 @@ OBJECT_KEYWORDS = OrderedDict(
         ("truck", ["truck", "lorry", "卡车", "货车"]),
         ("motorcycle", ["motorcycle", "scooter", "motorbike", "摩托车", "电动车", "踏板车"]),
         ("construction_vehicle", ["construction vehicle", "construction truck", "工程车", "施工车辆"]),
-        ("traffic_cone", ["traffic cone", "cones", "路锥", "锥桶"]),
+        ("traffic_cone", ["traffic cone", "cones", "路锥", "雪糕筒","锥桶"]),
         ("barrier", ["barrier", "guardrail", "护栏", "路障"]),
         ("trailer", ["trailer", "\u62d6\u8f66", "\u6302\u8f66"]),
-        ("animal", ["animal", "animals", "\u52a8\u7269"]),
+        ("animal", ["animal", "animals","遛狗","\u52a8\u7269"]),
         ("vehicle", ["vehicle", "vehicles", "车辆", "车流"]),
     ]
 )
