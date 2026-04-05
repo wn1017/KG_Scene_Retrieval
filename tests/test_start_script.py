@@ -177,6 +177,33 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn('echo [WARN] Docker CLI is unavailable; skipping Attu startup.', content)
         self.assertIn('echo [WARN] Attu did not open port %ATTU_PORT% in time. Continuing without Attu.', content)
 
+    def test_start_script_uses_external_etcd_for_milvus(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn("MILVUS_ETCD_CONTAINER_NAME", content)
+        self.assertIn("MILVUS_ETCD_HOST_PORT", content)
+        self.assertIn("MILVUS_DATA_VOLUME", content)
+        self.assertIn("DOCKER_ETCD_IMAGE", content)
+        self.assertIn('docker run -d --name %MILVUS_ETCD_CONTAINER_NAME%', content)
+        self.assertIn('ETCD_USE_EMBED=false', content)
+        self.assertIn('ETCD_ENDPOINTS=host.docker.internal:%MILVUS_ETCD_HOST_PORT%', content)
+        self.assertNotIn(
+            'docker run -d --name milvus-standalone --security-opt seccomp=unconfined -e ETCD_USE_EMBED=true',
+            content,
+        )
+        self.assertNotIn(
+            '-v "%WORKSPACE_UNIX%/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro"',
+            content,
+        )
+
+    def test_start_script_recreates_legacy_embedded_etcd_milvus(self):
+        content = START_BAT.read_text(encoding="ascii")
+
+        self.assertIn(":milvus_container_needs_recreate", content)
+        self.assertIn("Legacy Milvus container uses embedded etcd. Recreating it with external etcd.", content)
+        self.assertIn("docker rm -f %MILVUS_CONTAINER_NAME%", content)
+        self.assertIn("docker rename milvus-etcd-recover %MILVUS_ETCD_CONTAINER_NAME%", content)
+
     def test_config_exposes_attu_settings(self):
         config_content = (ROOT / "config.py").read_text(encoding="utf-8")
 
@@ -190,6 +217,10 @@ class StartScriptTests(unittest.TestCase):
         self.assertIn('DOCKER_ATTU_IMAGE = "zilliz/attu:v2.6.3"', config_content)
         self.assertIn('ATTU_CONTAINER_NAME = "attu"', config_content)
         self.assertIn('ATTU_MILVUS_URL = "host.docker.internal:19530"', config_content)
+        self.assertIn('MILVUS_CONTAINER_NAME = "milvus-standalone"', config_content)
+        self.assertIn('MILVUS_ETCD_CONTAINER_NAME = "milvus-etcd"', config_content)
+        self.assertIn('MILVUS_ETCD_HOST_PORT = 12379', config_content)
+        self.assertIn('MILVUS_DATA_VOLUME = "milvus_smoketest_data"', config_content)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,10 @@ set "ATTU_URL=http://127.0.0.1:%ATTU_PORT%"
 set "NEO4J_BROWSER_URL=http://127.0.0.1:7474"
 set "ATTU_CONTAINER_NAME=attu"
 set "ATTU_MILVUS_URL=host.docker.internal:19530"
+set "MILVUS_CONTAINER_NAME=milvus-standalone"
+set "MILVUS_ETCD_CONTAINER_NAME=milvus-etcd"
+set "MILVUS_ETCD_HOST_PORT=12379"
+set "MILVUS_DATA_VOLUME=milvus_smoketest_data"
 set "DOCKER_ATTU_IMAGE=zilliz/attu:v2.6.3"
 set "GRADIO_STATUS=NOT_STARTED"
 set "GRADIO_STATUS_DETAIL=Gradio has not been launched yet."
@@ -77,10 +81,6 @@ if not exist "src\nuscenes_metadata.py" (
     echo [ERROR] Missing src\nuscenes_metadata.py
     set "MISSING=1"
 )
-if not exist "embedEtcd.yaml" (
-    echo [ERROR] Missing embedEtcd.yaml
-    set "MISSING=1"
-)
 if not exist "user.yaml" (
     echo [ERROR] Missing user.yaml
     set "MISSING=1"
@@ -112,7 +112,7 @@ if defined no_proxy (
 set "GRADIO_SERVER_NAME=127.0.0.1"
 set "GRADIO_SERVER_PORT=%APP_PORT%"
 
-call conda run -n kg python -c "from config import APP_PORT, ATTU_CONTAINER_NAME, ATTU_MILVUS_URL, ATTU_PORT, CHNCLIP_MODEL_DIR, DOCKER_ATTU_IMAGE, DOCKER_MILVUS_HEALTH_PORT, DOCKER_MILVUS_IMAGE, DOCKER_NEO4J_IMAGE, ENGCLIP_MODEL_DIR, IMAGE_CSV_PATH, MILVUS_PORT, NEO4J_HTTP_PORT, NEO4J_URI, NUSCENES_META_DIR; bolt_port=int(NEO4J_URI.rsplit(':', 1)[1]); engclip_config=ENGCLIP_MODEL_DIR / 'config.json'; engclip_model=ENGCLIP_MODEL_DIR / 'pytorch_model.bin'; chnclip_config=CHNCLIP_MODEL_DIR / 'config.json'; chnclip_model=CHNCLIP_MODEL_DIR / 'pytorch_model.bin'; meta_scene=NUSCENES_META_DIR / 'scene.json'; meta_sample=NUSCENES_META_DIR / 'sample.json'; meta_sample_data=NUSCENES_META_DIR / 'sample_data.json'; meta_annotation=NUSCENES_META_DIR / 'sample_annotation.json'; lines=[f'set \"APP_PORT={APP_PORT}\"', f'set \"ATTU_CONTAINER_NAME={ATTU_CONTAINER_NAME}\"', f'set \"ATTU_MILVUS_URL={ATTU_MILVUS_URL}\"', f'set \"ATTU_PORT={ATTU_PORT}\"', f'set \"DOCKER_ATTU_IMAGE={DOCKER_ATTU_IMAGE}\"', f'set \"DOCKER_MILVUS_IMAGE={DOCKER_MILVUS_IMAGE}\"', f'set \"DOCKER_NEO4J_IMAGE={DOCKER_NEO4J_IMAGE}\"', f'set \"MILVUS_PORT={MILVUS_PORT}\"', f'set \"NEO4J_HTTP_PORT={NEO4J_HTTP_PORT}\"', f'set \"NEO4J_BOLT_PORT={bolt_port}\"', f'set \"DOCKER_MILVUS_HEALTH_PORT={DOCKER_MILVUS_HEALTH_PORT}\"', f'set \"IMAGE_CSV_PATH={IMAGE_CSV_PATH}\"', f'set \"NUSCENES_META_DIR={NUSCENES_META_DIR}\"', f'set \"META_SCENE_PATH={meta_scene}\"', f'set \"META_SAMPLE_PATH={meta_sample}\"', f'set \"META_SAMPLE_DATA_PATH={meta_sample_data}\"', f'set \"META_ANNOTATION_PATH={meta_annotation}\"', f'set \"ENGCLIP_CONFIG_PATH={engclip_config}\"', f'set \"ENGCLIP_MODEL_PATH={engclip_model}\"', f'set \"CHNCLIP_CONFIG_PATH={chnclip_config}\"', f'set \"CHNCLIP_MODEL_PATH={chnclip_model}\"']; print(*lines, sep='\n')" > "%SERVICE_VARS_FILE%"
+call conda run -n kg python -c "from config import APP_PORT, ATTU_CONTAINER_NAME, ATTU_MILVUS_URL, ATTU_PORT, CHNCLIP_MODEL_DIR, DOCKER_ATTU_IMAGE, DOCKER_ETCD_IMAGE, DOCKER_MILVUS_HEALTH_PORT, DOCKER_MILVUS_IMAGE, DOCKER_NEO4J_IMAGE, ENGCLIP_MODEL_DIR, IMAGE_CSV_PATH, MILVUS_CONTAINER_NAME, MILVUS_DATA_VOLUME, MILVUS_ETCD_CONTAINER_NAME, MILVUS_ETCD_HOST_PORT, MILVUS_PORT, NEO4J_HTTP_PORT, NEO4J_URI, NUSCENES_META_DIR; bolt_port=int(NEO4J_URI.rsplit(':', 1)[1]); engclip_config=ENGCLIP_MODEL_DIR / 'config.json'; engclip_model=ENGCLIP_MODEL_DIR / 'pytorch_model.bin'; chnclip_config=CHNCLIP_MODEL_DIR / 'config.json'; chnclip_model=CHNCLIP_MODEL_DIR / 'pytorch_model.bin'; meta_scene=NUSCENES_META_DIR / 'scene.json'; meta_sample=NUSCENES_META_DIR / 'sample.json'; meta_sample_data=NUSCENES_META_DIR / 'sample_data.json'; meta_annotation=NUSCENES_META_DIR / 'sample_annotation.json'; lines=[f'set \"APP_PORT={APP_PORT}\"', f'set \"ATTU_CONTAINER_NAME={ATTU_CONTAINER_NAME}\"', f'set \"ATTU_MILVUS_URL={ATTU_MILVUS_URL}\"', f'set \"ATTU_PORT={ATTU_PORT}\"', f'set \"DOCKER_ATTU_IMAGE={DOCKER_ATTU_IMAGE}\"', f'set \"DOCKER_ETCD_IMAGE={DOCKER_ETCD_IMAGE}\"', f'set \"DOCKER_MILVUS_IMAGE={DOCKER_MILVUS_IMAGE}\"', f'set \"DOCKER_NEO4J_IMAGE={DOCKER_NEO4J_IMAGE}\"', f'set \"MILVUS_CONTAINER_NAME={MILVUS_CONTAINER_NAME}\"', f'set \"MILVUS_DATA_VOLUME={MILVUS_DATA_VOLUME}\"', f'set \"MILVUS_ETCD_CONTAINER_NAME={MILVUS_ETCD_CONTAINER_NAME}\"', f'set \"MILVUS_ETCD_HOST_PORT={MILVUS_ETCD_HOST_PORT}\"', f'set \"MILVUS_PORT={MILVUS_PORT}\"', f'set \"NEO4J_HTTP_PORT={NEO4J_HTTP_PORT}\"', f'set \"NEO4J_BOLT_PORT={bolt_port}\"', f'set \"DOCKER_MILVUS_HEALTH_PORT={DOCKER_MILVUS_HEALTH_PORT}\"', f'set \"IMAGE_CSV_PATH={IMAGE_CSV_PATH}\"', f'set \"NUSCENES_META_DIR={NUSCENES_META_DIR}\"', f'set \"META_SCENE_PATH={meta_scene}\"', f'set \"META_SAMPLE_PATH={meta_sample}\"', f'set \"META_SAMPLE_DATA_PATH={meta_sample_data}\"', f'set \"META_ANNOTATION_PATH={meta_annotation}\"', f'set \"ENGCLIP_CONFIG_PATH={engclip_config}\"', f'set \"ENGCLIP_MODEL_PATH={engclip_model}\"', f'set \"CHNCLIP_CONFIG_PATH={chnclip_config}\"', f'set \"CHNCLIP_MODEL_PATH={chnclip_model}\"']; print(*lines, sep='\n')" > "%SERVICE_VARS_FILE%"
 if errorlevel 1 (
     echo [ERROR] Failed to load Docker service variables from config.py.
     set "KGSR_EXIT_CODE=1"
@@ -212,18 +212,11 @@ if errorlevel 1 (
     docker start neo4j >nul 2>&1
 )
 
-docker inspect milvus-standalone >nul 2>&1
+call :ensure_milvus_services
 if errorlevel 1 (
-    echo [INFO] Creating Milvus container...
-    set "WORKSPACE_UNIX=%CD:\=/%"
-    docker run -d --name milvus-standalone --security-opt seccomp=unconfined -e ETCD_USE_EMBED=true -e ETCD_DATA_DIR=/var/lib/milvus/etcd -e ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml -e COMMON_STORAGETYPE=local -e DEPLOY_MODE=STANDALONE -v kg_scene_retrieval_milvus_data:/var/lib/milvus -v "%WORKSPACE_UNIX%/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro" -v "%WORKSPACE_UNIX%/user.yaml:/milvus/configs/user.yaml:ro" -p %MILVUS_PORT%:19530 -p %DOCKER_MILVUS_HEALTH_PORT%:9091 %DOCKER_MILVUS_IMAGE% milvus run standalone >nul
-    if errorlevel 1 (
-        echo [ERROR] Failed to create or start Milvus.
-        set "KGSR_EXIT_CODE=1"
-        goto exit_with_pause
-    )
-) else (
-    docker start milvus-standalone >nul 2>&1
+    echo [ERROR] Failed to create or start Milvus.
+    set "KGSR_EXIT_CODE=1"
+    goto exit_with_pause
 )
 
 echo [INFO] Waiting for Neo4j on port %NEO4J_BOLT_PORT%...
@@ -418,6 +411,81 @@ if %ATTU_WAIT_COUNT% LEQ 0 (
 timeout /t 2 /nobreak >nul
 set /a ATTU_WAIT_COUNT-=1
 goto attu_wait_loop
+
+:ensure_milvus_services
+call :ensure_milvus_etcd
+if errorlevel 1 exit /b 1
+call :ensure_milvus_standalone
+exit /b %errorlevel%
+
+:ensure_milvus_etcd
+docker inspect %MILVUS_ETCD_CONTAINER_NAME% >nul 2>&1
+if errorlevel 1 (
+    docker inspect milvus-etcd-recover >nul 2>&1
+    if not errorlevel 1 (
+        echo [INFO] Adopting temporary Milvus etcd recovery container...
+        docker rename milvus-etcd-recover %MILVUS_ETCD_CONTAINER_NAME% >nul 2>&1
+        if errorlevel 1 (
+            echo [ERROR] Failed to rename the temporary Milvus etcd recovery container.
+            exit /b 1
+        )
+    )
+)
+docker inspect %MILVUS_ETCD_CONTAINER_NAME% >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Creating Milvus etcd container...
+    docker run -d --name %MILVUS_ETCD_CONTAINER_NAME% --restart unless-stopped -p %MILVUS_ETCD_HOST_PORT%:2379 -v %MILVUS_DATA_VOLUME%:/var/lib/milvus %DOCKER_ETCD_IMAGE% etcd --name milvus-etcd --data-dir /var/lib/milvus/etcd --listen-client-urls http://0.0.0.0:2379 --advertise-client-urls http://0.0.0.0:2379 --listen-peer-urls http://0.0.0.0:2380 --initial-advertise-peer-urls http://0.0.0.0:2380 --initial-cluster milvus-etcd=http://0.0.0.0:2380 >nul
+    if errorlevel 1 (
+        echo [ERROR] Failed to create the Milvus etcd container.
+        exit /b 1
+    )
+) else (
+    docker start %MILVUS_ETCD_CONTAINER_NAME% >nul 2>&1
+    docker update --restart unless-stopped %MILVUS_ETCD_CONTAINER_NAME% >nul 2>&1
+)
+echo [INFO] Waiting for Milvus etcd on port %MILVUS_ETCD_HOST_PORT%...
+set /a MILVUS_ETCD_WAIT_COUNT=%PORT_WAIT_ATTEMPTS%
+:milvus_etcd_wait_loop
+powershell -NoProfile -Command "if (Test-NetConnection -ComputerName 127.0.0.1 -Port %MILVUS_ETCD_HOST_PORT% -InformationLevel Quiet -WarningAction SilentlyContinue) { exit 0 } else { exit 1 }"
+if not errorlevel 1 exit /b 0
+if %MILVUS_ETCD_WAIT_COUNT% LEQ 0 (
+    echo [ERROR] Milvus etcd did not open port %MILVUS_ETCD_HOST_PORT% in time.
+    exit /b 1
+)
+timeout /t 2 /nobreak >nul
+set /a MILVUS_ETCD_WAIT_COUNT-=1
+goto milvus_etcd_wait_loop
+
+:milvus_container_needs_recreate
+docker inspect %MILVUS_CONTAINER_NAME% >nul 2>&1
+if errorlevel 1 exit /b 1
+powershell -NoProfile -Command "$envs = @(docker inspect %MILVUS_CONTAINER_NAME% --format '{{json .Config.Env}}' | ConvertFrom-Json); $binds = @(docker inspect %MILVUS_CONTAINER_NAME% --format '{{json .HostConfig.Binds}}' | ConvertFrom-Json); if (($envs -contains 'ETCD_USE_EMBED=true') -or (($binds -join ' ') -like '*embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro*')) { exit 0 } else { exit 1 }"
+exit /b %errorlevel%
+
+:ensure_milvus_standalone
+call :milvus_container_needs_recreate
+if not errorlevel 1 (
+    echo [INFO] Legacy Milvus container uses embedded etcd. Recreating it with external etcd.
+    docker rm -f %MILVUS_CONTAINER_NAME% >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Failed to remove the legacy Milvus container.
+        exit /b 1
+    )
+)
+docker inspect %MILVUS_CONTAINER_NAME% >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Creating Milvus container...
+    set "WORKSPACE_UNIX=%CD:\=/%"
+    docker run -d --name %MILVUS_CONTAINER_NAME% --restart unless-stopped --security-opt seccomp=unconfined -e ETCD_USE_EMBED=false -e ETCD_ENDPOINTS=host.docker.internal:%MILVUS_ETCD_HOST_PORT% -e COMMON_STORAGETYPE=local -e DEPLOY_MODE=STANDALONE -v %MILVUS_DATA_VOLUME%:/var/lib/milvus -v "%WORKSPACE_UNIX%/user.yaml:/milvus/configs/user.yaml:ro" -p %MILVUS_PORT%:19530 -p %DOCKER_MILVUS_HEALTH_PORT%:9091 %DOCKER_MILVUS_IMAGE% milvus run standalone >nul
+    if errorlevel 1 (
+        echo [ERROR] Failed to create the Milvus container.
+        exit /b 1
+    )
+) else (
+    docker start %MILVUS_CONTAINER_NAME% >nul 2>&1
+    docker update --restart unless-stopped %MILVUS_CONTAINER_NAME% >nul 2>&1
+)
+exit /b 0
 
 :print_access_urls
 if not defined GRADIO_LOCAL_URL set "GRADIO_LOCAL_URL=%APP_URL%"
