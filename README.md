@@ -24,19 +24,47 @@
 - 提供可运行的 Gradio 检索界面
 - 提供离线 benchmark、结果图表与实验分析材料
 
-## 系统展示
+## 系统截图
 
-### `text2image` 检索结果示例
+### 首页概览
 
-![text2image 系统展示](docs/assets/readme_showcase_text2image.png)
+<p align="center">
+  <img src="docs/assets/readme_ui_home.png" width="100%" alt="系统首页概览">
+</p>
 
-> 图 1 系统在 `text2image` 模式下的检索结果展示。输入自然语言查询后，系统先完成天气、时段、地点和对象等条件解析，再结合 Neo4j 候选场景过滤与 Milvus 帧级相似度检索，最终返回 Top-K 图像结果及命中约束说明。
+> 图 1 系统首页概览。首页展示了项目定位、检索入口以及当前帧规模、场景规模、模型数量和视频生成方式等核心信息，适合作为整体功能入口与项目主页展示。
 
-### `text2video` 检索结果示例
+### 查询解析与 KG 映射示例
 
-![text2video 系统展示](docs/assets/readme_showcase_text2video.png)
+<p align="center">
+  <img src="docs/assets/readme_ui_query_parse_en.png" width="100%" alt="英文查询解析与 KG 映射">
+</p>
 
-> 图 2 系统在 `text2video` 模式下的结果展示。系统先检索命中帧作为锚点，再围绕锚点所在的同一 scene 与同一 camera 序列派生完整视频片段，用于场景浏览和定性分析。
+> 图 2 英文查询在在线界面中的解析结果。系统将 `rainy night intersection with pedestrians` 拆解为天气、时段、地点和对象条件，并同步展示 KG 实体映射路径与各阶段耗时。
+
+### `text2image` 检索结果
+
+<p align="center">
+  <img src="docs/assets/readme_ui_text2image_results.png" width="100%" alt="text2image 检索结果">
+</p>
+
+> 图 3 `text2image` 检索结果界面。系统返回 Top-K 图像帧结果，并提供放大查看与详细元数据说明，用于展示场景匹配情况与候选结果差异。
+
+### 复杂条件解析示例
+
+<p align="center">
+  <img src="docs/assets/readme_ui_query_parse_cn.png" width="100%" alt="中文复杂查询解析与 KG 映射">
+</p>
+
+> 图 4 中文复杂查询在在线界面中的解析结果。系统对“白天、路口有行人、摩托车及卡车通行”等多条件描述进行联合解析，并通过 KG 路径映射展示多对象与场景约束的对应关系。
+
+### `text2video` 检索结果
+
+<p align="center">
+  <img src="docs/assets/readme_ui_text2video_results.png" width="100%" alt="text2video 检索结果">
+</p>
+
+> 图 5 `text2video` 检索结果界面。系统先检索命中帧作为锚点，再围绕锚点所在的同一 scene 与同一 camera 序列派生完整视频片段，用于结果浏览与定性分析。
 
 ## 系统流程
 
@@ -73,7 +101,7 @@ flowchart LR
     end
 ```
 
-> 图 3 系统在线检索流程。系统首先对自然语言查询进行结构化解析，再结合知识图谱完成场景级过滤，随后在 Milvus 中执行帧级相似度检索，并最终生成图像结果或短视频片段结果。
+> 图 6 系统在线检索流程。系统首先对自然语言查询进行结构化解析，再结合知识图谱完成场景级过滤，随后在 Milvus 中执行帧级相似度检索，并最终生成图像结果或短视频片段结果。
 
 ## 检索模式
 
@@ -119,13 +147,13 @@ flowchart LR
 
 ![mAP 对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/map_bar.png)
 
-> 图 4 主实验中 `pure_clip` 与 `kg_clip_strict` 在 mAP 指标上的对比结果。可以看到引入知识图谱约束后，整体检索效果有明显提升。
+> 图 7 主实验中 `pure_clip` 与 `kg_clip_strict` 在 mAP 指标上的对比结果。可以看到引入知识图谱约束后，整体检索效果有明显提升。
 
 **响应时间对比图**
 
 ![响应时间对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/response_time_line.png)
 
-> 图 5 主实验中不同检索策略的平均响应时间对比。知识图谱过滤带来更强的结构化约束能力，同时也引入了一定的时延开销。
+> 图 8 主实验中不同检索策略的平均响应时间对比。知识图谱过滤带来更强的结构化约束能力，同时也引入了一定的时延开销。
 
 ## 当前运行配置
 
