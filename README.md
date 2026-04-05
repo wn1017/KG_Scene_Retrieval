@@ -24,6 +24,20 @@
 - 提供可运行的 Gradio 检索界面
 - 提供离线 benchmark、结果图表与实验分析材料
 
+## 系统展示
+
+### `text2image` 检索结果示例
+
+![text2image 系统展示](docs/assets/readme_showcase_text2image.png)
+
+> 图 1 系统在 `text2image` 模式下的检索结果展示。输入自然语言查询后，系统先完成天气、时段、地点和对象等条件解析，再结合 Neo4j 候选场景过滤与 Milvus 帧级相似度检索，最终返回 Top-K 图像结果及命中约束说明。
+
+### `text2video` 检索结果示例
+
+![text2video 系统展示](docs/assets/readme_showcase_text2video.png)
+
+> 图 2 系统在 `text2video` 模式下的结果展示。系统先检索命中帧作为锚点，再围绕锚点所在的同一 scene 与同一 camera 序列派生完整视频片段，用于场景浏览和定性分析。
+
 ## 系统流程
 
 ```mermaid
@@ -59,7 +73,7 @@ flowchart LR
     end
 ```
 
-> 图 1 系统在线检索流程。系统首先对自然语言查询进行结构化解析，再结合知识图谱完成场景级过滤，随后在 Milvus 中执行帧级相似度检索，并最终生成图像结果或短视频片段结果。
+> 图 3 系统在线检索流程。系统首先对自然语言查询进行结构化解析，再结合知识图谱完成场景级过滤，随后在 Milvus 中执行帧级相似度检索，并最终生成图像结果或短视频片段结果。
 
 ## 检索模式
 
@@ -73,6 +87,17 @@ flowchart LR
 - 先检索命中帧作为锚点
 - 再从同一场景、同一相机序列中收集连续帧
 - 动态生成可播放的短视频片段，用于结果展示与定性分析
+
+## 成果摘要卡片
+
+| 维度 | 结果 |
+| --- | --- |
+| 检索模式 | `text2image` / `text2video` |
+| 主体流程 | 查询解析 → KG 场景过滤 → CLIP 文本编码 → Milvus 帧级检索 → 图像或视频结果生成 |
+| 主实验提升 | `mAP: 0.289 → 0.490` |
+| 一致性提升 | `ConstraintConsistency@5: 0.320 → 0.755` |
+| 典型优势 | 对天气、时段、地点、对象等多条件查询更稳定 |
+| 交互能力 | 支持中英文自然语言输入与可视化结果展示 |
 
 ## 实验结果概览
 
@@ -94,13 +119,13 @@ flowchart LR
 
 ![mAP 对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/map_bar.png)
 
-> 图 2 主实验中 `pure_clip` 与 `kg_clip_strict` 在 mAP 指标上的对比结果。可以看到引入知识图谱约束后，整体检索效果有明显提升。
+> 图 4 主实验中 `pure_clip` 与 `kg_clip_strict` 在 mAP 指标上的对比结果。可以看到引入知识图谱约束后，整体检索效果有明显提升。
 
 **响应时间对比图**
 
 ![响应时间对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/response_time_line.png)
 
-> 图 3 主实验中不同检索策略的平均响应时间对比。知识图谱过滤带来更强的结构化约束能力，同时也引入了一定的时延开销。
+> 图 5 主实验中不同检索策略的平均响应时间对比。知识图谱过滤带来更强的结构化约束能力，同时也引入了一定的时延开销。
 
 ## 当前运行配置
 
