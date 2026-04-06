@@ -2,6 +2,8 @@
 
 基于知识图谱与自然语言驱动的跨模态驾驶场景检索系统。
 
+本项目为长安大学本科毕业设计《知识图谱与自然语言驱动的跨模态驾驶场景检索方法研究（2026）》的工程实现与实验仓库。
+
 本项目面向自动驾驶场景数据检索任务，结合知识图谱的结构化约束能力与 CLIP 的跨模态语义对齐能力，构建了一套支持中英文自然语言输入的驾驶场景检索原型系统。系统能够先对查询中的天气、时段、地点、目标对象等条件进行解析，再利用 Neo4j 对候选场景进行过滤，最后在 Milvus 中完成相似帧检索，并返回图像结果或短视频片段结果。
 
 ## 项目背景
@@ -32,7 +34,7 @@
   <img src="docs/assets/readme_ui_home.png" width="100%" alt="系统首页概览">
 </p>
 
-> 图 1 系统首页概览。首页展示了项目定位、检索入口以及当前帧规模、场景规模、模型数量和视频生成方式等核心信息，适合作为整体功能入口与项目主页展示。
+> 图 1 系统首页。
 
 ### 查询解析与 KG 映射示例
 
@@ -40,7 +42,7 @@
   <img src="docs/assets/readme_ui_query_parse_en.png" width="100%" alt="英文查询解析与 KG 映射">
 </p>
 
-> 图 2 英文查询在在线界面中的解析结果。系统将 `rainy night intersection with pedestrians` 拆解为天气、时段、地点和对象条件，并同步展示 KG 实体映射路径与各阶段耗时。
+> 图 2 英文查询解析结果。
 
 ### `text2image` 检索结果
 
@@ -48,7 +50,7 @@
   <img src="docs/assets/readme_ui_text2image_results.png" width="100%" alt="text2image 检索结果">
 </p>
 
-> 图 3 `text2image` 检索结果界面。系统返回 Top-K 图像帧结果，并提供放大查看与详细元数据说明，用于展示场景匹配情况与候选结果差异。
+> 图 3 `text2image` 检索结果。
 
 ### 复杂条件解析示例
 
@@ -56,7 +58,7 @@
   <img src="docs/assets/readme_ui_query_parse_cn.png" width="100%" alt="中文复杂查询解析与 KG 映射">
 </p>
 
-> 图 4 中文复杂查询在在线界面中的解析结果。系统对“白天、路口有行人、摩托车及卡车通行”等多条件描述进行联合解析，并通过 KG 路径映射展示多对象与场景约束的对应关系。
+> 图 4 中文复杂查询解析结果。
 
 ### `text2video` 检索结果
 
@@ -64,7 +66,7 @@
   <img src="docs/assets/readme_ui_text2video_results.png" width="100%" alt="text2video 检索结果">
 </p>
 
-> 图 5 `text2video` 检索结果界面。系统先检索命中帧作为锚点，再围绕锚点所在的同一 scene 与同一 camera 序列派生完整视频片段，用于结果浏览与定性分析。
+> 图 5 `text2video` 检索结果。
 
 ## 系统流程
 
@@ -101,7 +103,7 @@ flowchart LR
     end
 ```
 
-> 图 6 系统在线检索流程。系统首先对自然语言查询进行结构化解析，再结合知识图谱完成场景级过滤，随后在 Milvus 中执行帧级相似度检索，并最终生成图像结果或短视频片段结果。
+> 图 6 在线检索流程。
 
 ## 检索模式
 
@@ -147,13 +149,13 @@ flowchart LR
 
 ![mAP 对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/map_bar.png)
 
-> 图 7 主实验中 `pure_clip` 与 `kg_clip_strict` 在 mAP 指标上的对比结果。可以看到引入知识图谱约束后，整体检索效果有明显提升。
+> 图 7 mAP 对比。
 
 **响应时间对比图**
 
 ![响应时间对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/response_time_line.png)
 
-> 图 8 主实验中不同检索策略的平均响应时间对比。知识图谱过滤带来更强的结构化约束能力，同时也引入了一定的时延开销。
+> 图 8 平均响应时间对比。
 
 ## 当前运行配置
 
