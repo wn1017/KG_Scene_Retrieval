@@ -85,6 +85,16 @@ VIDEO_OUTPUT_MAX_WIDTH = 960
 HIT_METADATA_CACHE_SIZE = 4096
 VIDEO_CLIP_CACHE_SIZE = 64
 ENABLE_RETRIEVAL_TIMINGS = True
+ENABLE_STARTUP_PREWARM = True
+STARTUP_PREWARM_QUERIES = [
+    "雨天夜晚路口有行人",
+    "car near an intersection at night",
+    "白天高速上有卡车",
+    "bus at a crosswalk in the daytime",
+    "停车场有汽车",
+    "vehicle on an urban road",
+]
+STARTUP_PREWARM_IMAGE_LIMIT = 3
 
 # Backward-compatible aliases for modules that have not been migrated yet.
 TRAINVAL06_SUBSET_NAME = TRAINVAL_SUBSET_NAME

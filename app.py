@@ -21,6 +21,7 @@ from transformers import CLIPModel, CLIPProcessor, ChineseCLIPModel, ChineseCLIP
 from config import (
     CHNCLIP_MODEL_DIR,
     DEFAULT_TOP_K,
+    ENABLE_STARTUP_PREWARM,
     ENABLE_RETRIEVAL_TIMINGS,
     ENGCLIP_MODEL_DIR,
     GENERATED_VIDEO_DIR,
@@ -31,6 +32,8 @@ from config import (
     NUSCENES_META_DIR,
     NUSCENES_ROOT,
     PRIMARY_CAMERA,
+    STARTUP_PREWARM_IMAGE_LIMIT,
+    STARTUP_PREWARM_QUERIES,
     VIDEO_CLIP_CACHE_SIZE,
     VIDEO_FPS,
     VIDEO_FRAME_STRIDE,
@@ -417,6 +420,85 @@ else:
             "当前集合仍使用旧版 schema；在重建前，元数据过滤能力可能受限。"
         )
 INITIAL_STATUS = " | ".join(STARTUP_MESSAGES)
+
+
+def prewarm_result_images(hits: list[dict], image_limit: int) -> int:
+    if image_limit <= 0:
+        return 0
+
+    warmed_count = 0
+    seen_paths: set[str] = set()
+    for hit in hits:
+        resolved_path = str(hit.get("resolved_frame_path") or "")
+        if not resolved_path or resolved_path in seen_paths:
+            continue
+        seen_paths.add(resolved_path)
+
+        try:
+            with Image.open(resolved_path) as source_image:
+                warmed_image = source_image.convert("RGB")
+                warmed_image.load()
+                warmed_image.close()
+            warmed_count += 1
+        except Exception:
+            continue
+
+        if warmed_count >= image_limit:
+            break
+
+    return warmed_count
+
+
+def run_startup_prewarm() -> None:
+    if not ENABLE_STARTUP_PREWARM:
+        print("[startup-prewarm] disabled")
+        return
+
+    warm_queries = [str(query).strip() for query in STARTUP_PREWARM_QUERIES if str(query).strip()]
+    if not warm_queries:
+        print("[startup-prewarm] skipped: no warm-up queries configured")
+        return
+
+    started_at = time.perf_counter()
+    completed_queries = 0
+
+    try:
+        active_collection = get_live_collection()
+        if active_collection is not None:
+            ensure_collection_loaded(active_collection)
+    except Exception as exc:
+        print(f"[startup-prewarm] collection warm-up skipped: {exc}")
+
+    for index, query_text in enumerate(warm_queries, start=1):
+        try:
+            parsed_query = parse_query(query_text)
+            candidate_scene_tokens, _, should_stop = get_candidate_scene_tokens(parsed_query)
+            query_vector, model_name = encode_text_query(query_text)
+            warmed_hits: list[dict] = []
+
+            if not should_stop and get_live_collection() is not None:
+                warmed_hits = search_frame_hits(
+                    query_vector,
+                    limit=max(1, STARTUP_PREWARM_IMAGE_LIMIT),
+                    candidate_scene_tokens=candidate_scene_tokens,
+                )
+
+            warmed_images = prewarm_result_images(warmed_hits, STARTUP_PREWARM_IMAGE_LIMIT)
+            completed_queries += 1
+            print(
+                f"[startup-prewarm] warmed query#{index} "
+                f"lang={parsed_query.get('language', 'unknown')} "
+                f"model={model_name} candidates={len(candidate_scene_tokens)} "
+                f"hits={len(warmed_hits)} images={warmed_images}"
+            )
+        except Exception as exc:
+            print(f"[startup-prewarm] query#{index} skipped: {exc}")
+
+    elapsed = time.perf_counter() - started_at
+    print(
+        f"[startup-prewarm] completed {completed_queries}/{len(warm_queries)} "
+        f"queries in {elapsed:.2f}s"
+    )
 
 
 def format_parsed_query(parsed_query: dict) -> str:
@@ -3158,5 +3240,6 @@ def launch_interface() -> None:
 
 
 if __name__ == "__main__":
+    run_startup_prewarm()
     launch_interface()
 
