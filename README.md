@@ -30,41 +30,31 @@
 
 ### 首页概览
 
-<p align="center">
-  <img src="docs/assets/readme_ui_home.png" width="100%" alt="系统首页概览">
-</p>
+![系统首页概览](docs/assets/readme_ui_home.png)
 
 > 图 1 系统首页。
 
 ### 查询解析与 KG 映射示例
 
-<p align="center">
-  <img src="docs/assets/readme_ui_query_parse_en.png" width="100%" alt="英文查询解析与 KG 映射">
-</p>
+![英文查询解析与 KG 映射](docs/assets/readme_ui_query_parse_en.png)
 
 > 图 2 英文查询解析结果。
 
 ### `text2image` 检索结果
 
-<p align="center">
-  <img src="docs/assets/readme_ui_text2image_results.png" width="100%" alt="text2image 检索结果">
-</p>
+![检索结果](docs/assets/readme_ui_text2image_results.png)
 
 > 图 3 `text2image` 检索结果。
 
 ### 复杂条件解析示例
 
-<p align="center">
-  <img src="docs/assets/readme_ui_query_parse_cn.png" width="100%" alt="中文复杂查询解析与 KG 映射">
-</p>
+![中文复杂查询解析与 KG 映射](docs/assets/readme_ui_query_parse_cn.png)
 
 > 图 4 中文复杂查询解析结果。
 
 ### `text2video` 检索结果
 
-<p align="center">
-  <img src="docs/assets/readme_ui_text2video_results.png" width="100%" alt="text2video 检索结果">
-</p>
+![text2video 检索结果](docs/assets/readme_ui_text2video_results.png)
 
 > 图 5 `text2video` 检索结果。
 
@@ -125,7 +115,6 @@ flowchart LR
 | 检索模式 | `text2image` / `text2video` |
 | 主体流程 | 查询解析 → KG 场景过滤 → CLIP 文本编码 → Milvus 帧级检索 → 图像或视频结果生成 |
 | 主实验提升 | `mAP: 0.289 → 0.490` |
-| 一致性提升 | `ConstraintConsistency@5: 0.320 → 0.755` |
 | 典型优势 | 对天气、时段、地点、对象等多条件查询更稳定 |
 | 交互能力 | 支持中英文自然语言输入与可视化结果展示 |
 
@@ -133,29 +122,34 @@ flowchart LR
 
 主实验结果来自 `benchmark/runs/manual_query_seed_scene_main_e2e_median`：
 
-| 方法 | Precision@5 | Recall@5 | mAP | ConstraintConsistency@5 | 平均响应时间（s） |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `pure_clip` | 0.080 | 0.400 | 0.289 | 0.320 | 0.016 |
-| `kg_clip_strict` | 0.110 | 0.550 | 0.490 | 0.755 | 0.116 |
+| 方法 | Precision@5 | Recall@5 | mAP | 平均响应时间（s） |
+| --- | ---: | ---: | ---: | ---: |
+| `pure_clip` | 0.080 | 0.400 | 0.289 | 0.016 |
+| `kg_clip_strict` | 0.110 | 0.550 | 0.490 | 0.116 |
 
 可以看到：
 
-- 引入知识图谱约束后，检索结果的相关性和条件一致性都有明显提升
+- 引入知识图谱约束后，检索结果的相关性都有明显提升
 - 更严格的结构化过滤会带来一定额外时延，但整体结果质量更高
 
 ### 结果图表
 
-**mAP 对比图**
 
-![mAP 对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/map_bar.png)
+![mAP 对比图](docs\assets\map.png)
 
-> 图 7 mAP 对比。
+> 图 7 mAP 对比
 
-**响应时间对比图**
+![Precision@5](docs\assets\precision5.png)
 
-![响应时间对比图](benchmark/runs/manual_query_seed_scene_main_e2e_median/figures/response_time_line.png)
+> 图 8 Precision@5 对比
 
-> 图 8 平均响应时间对比。
+![Recall@5 对比图](docs\assets\recall5.png)
+
+> 图 9 Recall@5 对比
+
+![响应时间对比图](docs\assets\response_time_line.png)
+
+> 图 10 平均响应时间对比。
 
 ## 当前运行配置
 
@@ -290,7 +284,6 @@ KG_Scene_Retrieval/
 
 - [`docs/项目解释-简版.md`](docs/项目解释-简版.md)：适合快速建立整体认识
 - [`docs/项目解释-详尽版.md`](docs/项目解释-详尽版.md)：适合系统性阅读源码和实验链路
-- [`docs/毕业设计图纸_定稿版.md`](docs/毕业设计图纸_定稿版.md)：系统结构图与图纸草稿
 
 ## 说明
 
