@@ -135,19 +135,19 @@ flowchart LR
 ### 结果图表
 
 
-![mAP 对比图](docs\assets\map.png)
+![Precision@5](docs/assets/precision5.png)
 
-> 图 7 mAP 对比
+> 图 7 Precision@5 对比
 
-![Precision@5](docs\assets\precision5.png)
+![Recall@5 对比图](docs/assets/recall5.png)
 
-> 图 8 Precision@5 对比
+> 图 8 Recall@5 对比
 
-![Recall@5 对比图](docs\assets\recall5.png)
+![mAP 对比图](docs/assets/map.png)
 
-> 图 9 Recall@5 对比
+> 图 9 mAP 对比
 
-![响应时间对比图](docs\assets\response_time_line.png)
+![响应时间对比图](docs/assets/response_time_line.png)
 
 > 图 10 平均响应时间对比。
 
